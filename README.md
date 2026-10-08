@@ -29,6 +29,16 @@ One Android app, two roles:
 - Bluetooth HID remotes and presenter clickers work out of the box (media keys, Page Up/Down)
 - Kiosk-ready: auto-start on boot, optional home-launcher mode
 
+## Quality
+
+Nothing is ever compressed or re-encoded. The admin uploads the **original file byte-for-byte** (no resizing, transcoding or re-encoding at any step), and the board downloads exactly those bytes:
+
+- Every S3 request is SHA-256 signed over its payload, so a corrupted part is rejected by storage.
+- The board checks each downloaded file against its content fingerprint (size + SHA-256 of the head/tail) before it is ever played.
+- The app declares native HEVC / HDR10 / HDR10+ / HLG / Dolby Vision support (`res/xml/media_capabilities.xml`), so Android 12+ never hands it a transcoded AVC copy.
+- With *media location* permission, photos and videos keep their original EXIF/location metadata (`MediaStore.setRequireOriginal`).
+- Thumbnails are separate small JPEGs; the original is never touched. On the board, images are decoded at the panel's full physical resolution (4K) and videos play at their native resolution.
+
 ## Tech
 
 Kotlin · Jetpack Compose · Media3 ExoPlayer · Redis (built-in RESP client over TLS) · S3-compatible storage (Cloudflare R2 by default) · BLE GATT · WorkManager
@@ -85,6 +95,18 @@ androplay.s3Region=auto
 androplay.s3AccessKey=...
 androplay.s3SecretKey=...
 ```
+
+### Admin login
+
+Default account: username **`PAIRLAB`**, password **`PAIR2026LAB`** (username is case-insensitive, password is not).
+
+It protects:
+
+- the Admin dashboard (login screen on first open; **Settings → Log out** to sign out)
+- settings and role changes on any device (a fresh device can pick **Board / Player** without it)
+- unlocking a locked board
+
+The account is hardcoded; only a SHA-256 is stored. To change it, set `CREDENTIAL_HASH` in `app/src/main/java/app/androplay/core/AdminAuth.kt` to `sha256("USERNAME:password")` with the username in uppercase, e.g. `printf 'USERNAME:password' | shasum -a 256`.
 
 ## Docs
 

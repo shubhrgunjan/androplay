@@ -24,6 +24,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Forward10
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
@@ -71,6 +73,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import android.os.SystemClock
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import app.androplay.board.formatSize
@@ -98,6 +101,8 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSettings: (
     val error by repo.error.collectAsState()
     val bleStatus by repo.ble.status.collectAsState()
     val state by repo.state.collectAsState()
+    val uploadSummary by repo.uploadSummary.collectAsState()
+    val locked = state?.locked == true
     var filter by remember { mutableStateOf<ContentType?>(null) }
     var boardMenu by remember { mutableStateOf(false) }
     var menuFor by remember { mutableStateOf<Entry?>(null) }
@@ -134,7 +139,7 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSettings: (
                                     bleStatus == BleLink.Status.READY -> " Online · Bluetooth"
                                     board?.online == true -> " Online · Cloud"
                                     else -> " Offline"
-                                },
+                                } + if (board != null && locked) " · Screen locked" else "",
                                 style = MaterialTheme.typography.labelMedium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
@@ -155,7 +160,15 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSettings: (
                         if (boards.isEmpty()) DropdownMenuItem(text = { Text("Install AndroPlay on a board and choose Board") }, onClick = {})
                     }
                 },
-                actions = { IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "Settings") } },
+                actions = {
+                    IconButton(onClick = { send(Command.Lock(!locked)) }, enabled = board != null) {
+                        Icon(
+                            if (locked) Icons.Default.Lock else Icons.Default.LockOpen,
+                            if (locked) "Unlock board screen" else "Lock board screen",
+                        )
+                    }
+                    IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "Settings") }
+                },
             )
         },
         floatingActionButton = { FloatingActionButton(onClick = onAdd) { Icon(Icons.Default.Add, "Add content") } },
@@ -171,6 +184,9 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSettings: (
                         label = { Text("${t.folder} ${entries.count { it.type == t }}") },
                     )
                 }
+            }
+            if (uploadSummary.active > 0) {
+                UploadBanner(uploadSummary)
             }
             if (visible.isEmpty()) {
                 Text(
@@ -254,8 +270,8 @@ private fun Tile(repo: AdminRepository, e: Entry) {
                     when (e.status) {
                         EntryStatus.QUEUED -> "Queued"
                         EntryStatus.UPLOADING -> "Uploading ${(e.progress * 100).toInt()}%"
-                        EntryStatus.WAITING -> "Waiting for board"
-                        EntryStatus.DOWNLOADING -> "On board ${(e.progress * 100).toInt()}%"
+                        EntryStatus.WAITING -> "Queued for board"
+                        EntryStatus.DOWNLOADING -> "Board ${(e.progress * 100).toInt()}%"
                         EntryStatus.FAILED -> "Failed · tap to retry"
                         EntryStatus.READY -> ""
                     },
@@ -291,7 +307,10 @@ private fun RemoteBar(state: PlaybackState?, entries: List<Entry>, send: (Comman
     val media = current?.type == ContentType.VIDEO || current?.type == ContentType.AUDIO
     var seeking by remember { mutableStateOf<Float?>(null) }
     var volume by remember { mutableFloatStateOf(s.volume.toFloat()) }
-    LaunchedEffect(s.volume) { volume = s.volume.toFloat() }
+    // Last time a volume command went out while dragging; throttles live updates to one per 150 ms.
+    val lastVolumeSend = remember { longArrayOf(0L) }
+    var draggingVolume by remember { mutableStateOf(false) }
+    LaunchedEffect(s.volume) { if (!draggingVolume) volume = s.volume.toFloat() }
 
     Surface(tonalElevation = 3.dp) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
@@ -312,8 +331,20 @@ private fun RemoteBar(state: PlaybackState?, entries: List<Entry>, send: (Comman
                 }
                 Slider(
                     value = volume,
-                    onValueChange = { volume = it },
-                    onValueChangeFinished = { send(Command.Volume(volume.toInt())) },
+                    onValueChange = {
+                        volume = it
+                        draggingVolume = true
+                        val now = SystemClock.uptimeMillis()
+                        if (now - lastVolumeSend[0] >= 150) {
+                            lastVolumeSend[0] = now
+                            send(Command.Volume(it.toInt()))
+                        }
+                    },
+                    onValueChangeFinished = {
+                        lastVolumeSend[0] = 0L
+                        draggingVolume = false
+                        send(Command.Volume(volume.toInt()))
+                    },
                     valueRange = 0f..100f,
                     modifier = Modifier.size(width = 110.dp, height = 40.dp),
                 )
@@ -339,6 +370,24 @@ private fun RemoteBar(state: PlaybackState?, entries: List<Entry>, send: (Comman
                 IconButton(onClick = { send(Command.Next) }) { Icon(Icons.Default.SkipNext, "Next") }
                 IconButton(onClick = { send(Command.Stop) }) { Icon(Icons.Default.Stop, "Stop") }
             }
+        }
+    }
+}
+
+@Composable
+private fun UploadBanner(summary: UploadSummary) {
+    val fraction = if (summary.totalBytes > 0) (summary.uploadedBytes.toFloat() / summary.totalBytes).coerceIn(0f, 1f) else 0f
+    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Text(
+                "Uploading ${summary.active} file${if (summary.active == 1) "" else "s"} · " +
+                    "${formatSize(summary.uploadedBytes)} of ${formatSize(summary.totalBytes)}",
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.size(6.dp))
+            LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
         }
     }
 }

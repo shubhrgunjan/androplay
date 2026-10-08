@@ -81,6 +81,11 @@ class PlayerEngine(
     /** Board UI shows the content grid while true. */
     val libraryVisible = MutableStateFlow(true)
 
+    private val prefs = ctx.getSharedPreferences("board", Context.MODE_PRIVATE)
+
+    /** Touchscreen lock (persisted). Touches are swallowed by BoardActivity; remotes/phones still work. */
+    val locked = MutableStateFlow(prefs.getBoolean("locked", false))
+
     private val audio = ctx.getSystemService(AudioManager::class.java)
 
     private val listener = object : Player.Listener {
@@ -150,7 +155,11 @@ class PlayerEngine(
             Command.Prev -> step(-1)
             is Command.GoToPage -> current?.takeIf { it.type == ContentType.PDF }?.let { showPage(it, cmd.page) }
             Command.Stop -> stop()
-            Command.ToggleLibrary -> libraryVisible.value = !libraryVisible.value || current == null
+            Command.ToggleLibrary -> if (!locked.value) libraryVisible.value = !libraryVisible.value || current == null
+            is Command.Lock -> {
+                locked.value = cmd.locked
+                prefs.edit().putBoolean("locked", cmd.locked).apply()
+            }
             is Command.SetQueue -> {
                 queue = cmd.handles
                 preloadNext()
@@ -398,6 +407,7 @@ class PlayerEngine(
             page = if (item?.type == ContentType.PDF) page else 0,
             pageCount = if (item?.type == ContentType.PDF) item.pageCount else 0,
             manifestVersion = library.manifest.value.version,
+            locked = locked.value,
         )
     }
 

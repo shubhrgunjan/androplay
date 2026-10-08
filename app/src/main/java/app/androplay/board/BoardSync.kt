@@ -22,6 +22,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
@@ -37,7 +38,13 @@ data class SyncStatus(
     val downloading: String? = null,
     val downloadProgress: Float = 0f,
     val pending: Int = 0,
+    /** Content for this board that an admin is still uploading, with live progress. */
+    val incoming: List<IncomingUpload> = emptyList(),
 )
+
+data class IncomingUpload(val id: String, val name: String, val uploaded: Long, val size: Long) {
+    val fraction: Float get() = if (size <= 0) 0f else (uploaded.toFloat() / size).coerceIn(0f, 1f)
+}
 
 /**
  * Board-side sync engine:
@@ -60,6 +67,10 @@ class BoardSync(
     private var subscriber: RedisSubscriber? = null
 
     private val status = app.syncStatus
+
+    /** id -> upload in progress elsewhere, plus when its byte count last changed (for staleness). */
+    private class Incoming(val upload: IncomingUpload, val changedAt: Long)
+    private val incoming = LinkedHashMap<String, Incoming>()
 
     fun start() {
         subscriber = RedisSubscriber(backend.url, listOf(backend.commandChannel(me))) { _, payload ->
@@ -142,12 +153,42 @@ class BoardSync(
 
     private fun handleEvent(e: Backend.Event) {
         when (e.op) {
-            "add", "update" -> backend.content(e.contentId)?.let(::apply)
+            "add", "update" -> {
+                val c = backend.content(e.contentId)
+                trackIncoming(e.contentId, c)
+                c?.let(::apply)
+            }
+            "progress" -> trackIncoming(e.contentId, backend.content(e.contentId))
             "remove" -> {
+                trackIncoming(e.contentId, null)
                 if (store.remove(e.contentId, deleteFile = true)) app.thumbnails.evict(e.contentId)
                 backend.removeHave(me, e.contentId)
             }
         }
+    }
+
+    /** Records (or forgets) an upload in progress for this board, then republishes the list. */
+    private fun trackIncoming(id: String, c: Content?) {
+        synchronized(incoming) {
+            if (c != null && !c.ready && c.isFor(me)) putIncoming(c) else incoming.remove(id)
+        }
+        publishIncoming()
+    }
+
+    /** Caller holds the `incoming` lock. */
+    private fun putIncoming(c: Content) {
+        val prev = incoming[c.id]
+        val changedAt = if (prev != null && prev.upload.uploaded == c.uploaded) prev.changedAt else System.currentTimeMillis()
+        incoming[c.id] = Incoming(IncomingUpload(c.id, c.name, c.uploaded, c.size), changedAt)
+    }
+
+    private fun publishIncoming() {
+        val cutoff = System.currentTimeMillis() - STALE_UPLOAD_MS
+        val list = synchronized(incoming) {
+            // Hide abandoned uploads (no progress for a while); they reappear if progress resumes.
+            incoming.values.filter { it.changedAt >= cutoff }.map { it.upload }
+        }
+        status.update { it.copy(incoming = list) }
     }
 
     /** Brings local storage and the backend into agreement. Safe to run any time. */
@@ -183,6 +224,14 @@ class BoardSync(
             else if (c.objectKey.isNotEmpty()) enqueue(c)
         }
         backend.setHave(me, store.ids())
+
+        // 4. Uploads still in progress elsewhere that will land on this board.
+        synchronized(incoming) {
+            val live = contents.values.filter { !it.ready && it.isFor(me) }
+            incoming.keys.retainAll(live.map { it.id }.toSet())
+            live.forEach(::putIncoming)
+        }
+        publishIncoming()
     }
 
     private fun apply(c: Content) {
@@ -314,5 +363,6 @@ class BoardSync(
 
     private companion object {
         const val TAG = "BoardSync"
+        const val STALE_UPLOAD_MS = 10 * 60_000L
     }
 }

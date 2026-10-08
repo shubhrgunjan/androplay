@@ -44,9 +44,11 @@ import androidx.compose.ui.unit.dp
 import app.androplay.admin.AdminActivity
 import app.androplay.board.BoardActivity
 import app.androplay.board.BoardService
+import app.androplay.core.AdminAuth
 import app.androplay.core.Backend
 import app.androplay.core.BackendConfig
 import app.androplay.core.Role
+import app.androplay.ui.PasswordDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -73,10 +75,26 @@ class MainActivity : ComponentActivity() {
             route(role)
             return
         }
+        // Settings and role changes need the admin password; only a fresh device (no role yet) skips it.
+        // A logged-in admin phone already proved who it is; everyone else (boards included) must log in.
+        val needsAuth = (intent.getBooleanExtra(EXTRA_EDIT, false) || role != null) &&
+            !(role == Role.ADMIN && AdminAuth.isLoggedIn(this))
         enableEdgeToEdge()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
-                Surface(Modifier.fillMaxSize()) { SetupScreen(::save) }
+                Surface(Modifier.fillMaxSize()) {
+                    var unlocked by remember { mutableStateOf(!needsAuth) }
+                    if (unlocked) {
+                        SetupScreen(::save)
+                    } else {
+                        PasswordDialog(
+                            title = "Admin login",
+                            message = "Enter the admin username and password to change settings.",
+                            onDismiss = { finish() },
+                            onSuccess = { unlocked = true },
+                        )
+                    }
+                }
             }
         }
     }
@@ -95,7 +113,13 @@ class MainActivity : ComponentActivity() {
         s.config = config
         if (role == Role.BOARD) BoardService.restartSync(this)
         if (role == Role.ADMIN) stopService(Intent(this, BoardService::class.java))
+        if (role == Role.BOARD) AdminAuth.setLoggedIn(this, false) // don't leave a board logged in as admin
         route(role)
+    }
+
+    private fun logOut() {
+        AdminAuth.setLoggedIn(this, false)
+        route(Role.ADMIN) // AdminActivity comes back on its login screen
     }
 
     @Composable
@@ -136,6 +160,10 @@ class MainActivity : ComponentActivity() {
                     badge = if (bigScreen) "Recommended for this device" else null,
                     selected = role == Role.BOARD,
                 ) { choose(Role.BOARD) }
+
+                if (s.role == Role.ADMIN && AdminAuth.isLoggedIn(this@MainActivity)) {
+                    OutlinedButton(onClick = ::logOut, modifier = Modifier.fillMaxWidth()) { Text("Log out") }
+                }
 
                 TextButton(onClick = { showBackend = !showBackend }) {
                     Text(if (showBackend) "Hide backend settings" else "Backend settings")

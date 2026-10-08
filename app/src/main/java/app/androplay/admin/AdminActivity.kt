@@ -10,10 +10,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.content.IntentCompat
 import androidx.lifecycle.lifecycleScope
 import app.androplay.AndroPlayApp
 import app.androplay.MainActivity
+import app.androplay.core.AdminAuth
 import kotlinx.coroutines.launch
 
 class AdminActivity : ComponentActivity() {
@@ -23,6 +27,11 @@ class AdminActivity : ComponentActivity() {
         app.admin.restartBle()
     }
 
+    /** Admin login gate; the dashboard and its background work start only once logged in. */
+    private var loggedIn by mutableStateOf(false)
+    /** Shares that arrived before login; added right after a successful login. */
+    private val pendingShares = mutableListOf<Uri>()
+
     private val picker = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) add(uris)
     }
@@ -31,13 +40,18 @@ class AdminActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         requestPermissions()
+        loggedIn = AdminAuth.isLoggedIn(this)
         handleShare(intent)
         setContent {
-            AdminScreen(
-                repo = app.admin,
-                onAdd = { picker.launch(arrayOf("*/*")) },
-                onSettings = { startActivity(Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_EDIT, true)) },
-            )
+            if (!loggedIn) {
+                LoginScreen(onLoggedIn = ::onLoggedIn)
+            } else {
+                AdminScreen(
+                    repo = app.admin,
+                    onAdd = { picker.launch(arrayOf("*/*")) },
+                    onSettings = { startActivity(Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_EDIT, true)) },
+                )
+            }
         }
     }
 
@@ -48,7 +62,18 @@ class AdminActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        loggedIn = AdminAuth.isLoggedIn(this) // may have changed (Settings → Log out)
+        if (loggedIn) app.admin.setActive(true)
+    }
+
+    private fun onLoggedIn() {
+        loggedIn = true
         app.admin.setActive(true)
+        if (pendingShares.isNotEmpty()) {
+            val uris = pendingShares.toList()
+            pendingShares.clear()
+            add(uris)
+        }
     }
 
     override fun onStop() {
@@ -65,6 +90,8 @@ class AdminActivity : ComponentActivity() {
                 add(Manifest.permission.ACCESS_FINE_LOCATION)
             }
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+            // Keep EXIF/location in uploaded photos & videos (MediaStore.setRequireOriginal).
+            if (Build.VERSION.SDK_INT >= 29) add(Manifest.permission.ACCESS_MEDIA_LOCATION)
         }
         if (perms.any { checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED }) {
             permissions.launch(perms.toTypedArray())
@@ -79,7 +106,8 @@ class AdminActivity : ComponentActivity() {
                 IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
             else -> emptyList()
         }
-        if (uris.isNotEmpty()) add(uris)
+        if (uris.isEmpty()) return
+        if (loggedIn) add(uris) else pendingShares += uris
     }
 
     private fun add(uris: List<Uri>) {

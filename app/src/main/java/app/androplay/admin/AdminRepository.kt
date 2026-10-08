@@ -79,6 +79,11 @@ data class Entry(
     val progress: Float,
 )
 
+/** Aggregate of everything currently uploading or queued (this phone or other admins). */
+data class UploadSummary(val active: Int, val uploadedBytes: Long, val totalBytes: Long) {
+    val fraction: Float get() = if (totalBytes <= 0) 0f else (uploadedBytes.toFloat() / totalBytes).coerceIn(0f, 1f)
+}
+
 class AdminRepository(private val app: AndroPlayApp) {
     private val ctx: Context = app
     private val io = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -115,6 +120,16 @@ class AdminRepository(private val app: AndroPlayApp) {
     val entries: StateFlow<List<Entry>> = combine(contents, _uploads, boardSync, selectedId) { c, u, sync, board ->
         merge(c, u, sync, board)
     }.stateIn(main, SharingStarted.Eagerly, emptyList())
+
+    /** Live totals for an "uploading N files" banner. */
+    val uploadSummary: StateFlow<UploadSummary> = entries.map { list ->
+        val active = list.filter { it.status == EntryStatus.UPLOADING || it.status == EntryStatus.QUEUED }
+        UploadSummary(
+            active = active.size,
+            uploadedBytes = active.sumOf { (it.progress.coerceIn(0f, 1f) * it.size).toLong() },
+            totalBytes = active.sumOf { it.size },
+        )
+    }.distinctUntilChanged().stateIn(main, SharingStarted.Eagerly, UploadSummary(0, 0, 0))
 
     fun thumbUrl(c: Content): String? = if (c.hasThumb) runCatching { s3?.presignGet("thumbs/${c.id}.jpg", 6 * 3600) }.getOrNull() else null
 
@@ -267,11 +282,19 @@ class AdminRepository(private val app: AndroPlayApp) {
             try {
                 var cursor = b.lastEventId()
                 contents.value = b.allContent()
+                var lastRefresh = System.currentTimeMillis()
                 while (io.isActive) {
                     val events = reader.read(cursor)
                     if (events.isNotEmpty()) {
                         cursor = events.last().streamId
+                        // Progress events arrive per uploaded part (possibly from several admins):
+                        // coalesce them so the library reloads at most every PROGRESS_THROTTLE_MS.
+                        if (events.all { it.op == "progress" }) {
+                            val wait = PROGRESS_THROTTLE_MS - (System.currentTimeMillis() - lastRefresh)
+                            if (wait > 0) delay(wait)
+                        }
                         contents.value = b.allContent()
+                        lastRefresh = System.currentTimeMillis()
                     }
                 }
             } catch (e: CancellationException) {
@@ -304,7 +327,8 @@ class AdminRepository(private val app: AndroPlayApp) {
             val u = uploads[c.id]
             val (status, progress) = when {
                 !c.ready && u != null -> uploadStatus(u)
-                !c.ready -> EntryStatus.UPLOADING to 0f
+                // Another admin is uploading it: show their live progress from Redis.
+                !c.ready -> EntryStatus.UPLOADING to (c.uploaded / c.size.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
                 c.id in sync.have -> EntryStatus.READY to 1f
                 c.id in sync.progress -> EntryStatus.DOWNLOADING to (sync.progress[c.id]!! / c.size.coerceAtLeast(1).toFloat())
                 else -> EntryStatus.WAITING to 0f
@@ -336,7 +360,7 @@ class AdminRepository(private val app: AndroPlayApp) {
         // Share-sheet grants are temporary; keep a private copy so the upload can finish later.
         val uri = if (persistent) source else stage(source, name)
         val mime = cr.getType(uri)?.takeUnless { it == MimeTypes.BINARY } ?: MimeTypes.of(name)
-        val (size, id) = cr.openFileDescriptor(uri, "r")!!.let { pfd ->
+        val (size, id) = ctx.openOriginal(uri).let { pfd ->
             val size = pfd.statSize
             require(size > 0) { "Unknown file size" }
             ParcelFileDescriptor.AutoCloseInputStream(pfd).use { size to Fingerprint.of(it.channel, size) }
@@ -346,7 +370,7 @@ class AdminRepository(private val app: AndroPlayApp) {
 
     private fun stage(source: Uri, name: String): Uri {
         val dest = File(stagingDir, "${System.nanoTime()}-${name.replace('/', '_')}")
-        ctx.contentResolver.openInputStream(source)!!.use { input -> dest.outputStream().use { input.copyTo(it) } }
+        ParcelFileDescriptor.AutoCloseInputStream(ctx.openOriginal(source)).use { input -> dest.outputStream().use { input.copyTo(it) } }
         return Uri.fromFile(dest)
     }
 
@@ -359,5 +383,9 @@ class AdminRepository(private val app: AndroPlayApp) {
         val tmp = File(uploadsFile.path + ".tmp")
         tmp.writeText(ProtocolJson.encodeToString(items.values.toList()))
         tmp.renameTo(uploadsFile)
+    }
+
+    private companion object {
+        const val PROGRESS_THROTTLE_MS = 700L
     }
 }

@@ -1,16 +1,22 @@
 package app.androplay.board
 
 import android.Manifest
+import android.app.ActivityManager
+import android.app.admin.DevicePolicyManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.Size
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -21,7 +27,9 @@ import androidx.annotation.OptIn
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -44,6 +52,16 @@ class BoardActivity : ComponentActivity() {
     private val app get() = application as AndroPlayApp
     private lateinit var playerView: PlayerView
     private val setup = MutableStateFlow<List<SetupStep>>(emptyList())
+
+    /** Unlock password prompt is visible (opened by the unlock gesture while locked). */
+    private val showUnlock = MutableStateFlow(false)
+    private val handler = Handler(Looper.getMainLooper())
+    private val cornerTaps = ArrayDeque<Long>()
+    private var multiTouchArmed = false
+    private val requestUnlock = Runnable {
+        multiTouchArmed = false
+        if (app.engine.locked.value) showUnlock.value = true
+    }
 
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         BoardService.restartBle(this)
@@ -74,7 +92,9 @@ class BoardActivity : ComponentActivity() {
         app.engine.view = playerView
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() = app.dispatch(Command.ToggleLibrary)
+            override fun handleOnBackPressed() {
+                if (!app.engine.locked.value) app.dispatch(Command.ToggleLibrary)
+            }
         })
 
         setContent {
@@ -83,12 +103,77 @@ class BoardActivity : ComponentActivity() {
                 playerView = playerView,
                 setupFlow = setup,
                 onSetup = ::fixSetup,
+                showUnlockFlow = showUnlock,
+                onDismissUnlock = { showUnlock.value = false },
                 onImport = { importLauncher.launch(arrayOf("*/*")) },
                 onSettings = {
                     startActivity(Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_EDIT, true))
                 },
             )
         }
+        observeLock()
+    }
+
+    /** Pins the task (if allowed by device policy) and keeps system bars hidden while locked. */
+    private fun observeLock() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                app.engine.locked.collect { locked -> applyLock(locked) }
+            }
+        }
+    }
+
+    private fun applyLock(locked: Boolean) {
+        val am = getSystemService(ActivityManager::class.java)
+        val pinned = am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+        if (locked) {
+            WindowInsetsControllerCompat(window, window.decorView).hide(WindowInsetsCompat.Type.systemBars())
+            val permitted = runCatching {
+                getSystemService(DevicePolicyManager::class.java).isLockTaskPermitted(packageName)
+            }.getOrDefault(false)
+            if (permitted && !pinned) runCatching { startLockTask() }
+        } else {
+            showUnlock.value = false
+            handler.removeCallbacks(requestUnlock)
+            multiTouchArmed = false
+            if (pinned) runCatching { stopLockTask() }
+        }
+    }
+
+    /**
+     * While locked every touch on the board window is swallowed, except the unlock gestures:
+     * hold 3+ fingers for 2 s anywhere, or tap the top-left corner 5 times within 3 s.
+     * The password dialog is a separate window, so its touches never pass through here.
+     * Key events (Bluetooth remotes) go through [dispatchKeyEvent] and are unaffected.
+     */
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (!app.engine.locked.value) return super.dispatchTouchEvent(ev)
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val corner = 120 * resources.displayMetrics.density
+                if (ev.x <= corner && ev.y <= corner) {
+                    val now = SystemClock.uptimeMillis()
+                    cornerTaps.addLast(now)
+                    while (cornerTaps.isNotEmpty() && now - cornerTaps.first() > 3_000) cornerTaps.removeFirst()
+                    if (cornerTaps.size >= 5) {
+                        cornerTaps.clear()
+                        showUnlock.value = true
+                    }
+                }
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> if (ev.pointerCount >= 3 && !multiTouchArmed) {
+                multiTouchArmed = true
+                handler.postDelayed(requestUnlock, 2_000)
+            }
+            MotionEvent.ACTION_POINTER_UP -> if (ev.pointerCount - 1 < 3) cancelMultiTouch()
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> cancelMultiTouch()
+        }
+        return true
+    }
+
+    private fun cancelMultiTouch() {
+        multiTouchArmed = false
+        handler.removeCallbacks(requestUnlock)
     }
 
     override fun onStart() {
@@ -98,8 +183,13 @@ class BoardActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        val metrics = resources.displayMetrics
-        app.engine.screen = Size(metrics.widthPixels, metrics.heightPixels)
+        // Full physical panel (incl. system-bar areas) so stills decode at native 4K resolution.
+        app.engine.screen = if (android.os.Build.VERSION.SDK_INT >= 30) {
+            windowManager.maximumWindowMetrics.bounds.let { Size(it.width(), it.height()) }
+        } else {
+            @Suppress("DEPRECATION")
+            android.util.DisplayMetrics().also { windowManager.defaultDisplay.getRealMetrics(it) }.let { Size(it.widthPixels, it.heightPixels) }
+        }
         val hadStorage = SetupStep.STORAGE !in setup.value
         refreshSetup()
         if (!hadStorage && SetupStep.STORAGE !in setup.value) app.sync?.requestRescan()
@@ -111,6 +201,7 @@ class BoardActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        handler.removeCallbacks(requestUnlock)
         if (app.engine.view === playerView) app.engine.view = null
         super.onDestroy()
     }

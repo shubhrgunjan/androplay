@@ -104,10 +104,12 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
         }
         val key = "content/${u.id}"
         val uri = Uri.parse(u.uri)
-        applicationContext.contentResolver.openFileDescriptor(uri, "r")!!.use { pfd ->
+        applicationContext.openOriginal(uri).use { pfd ->
             FileInputStream(pfd.fileDescriptor).channel.use { ch ->
                 if (u.size <= PART) {
+                    reportProgress(backend, u.id, 0)
                     s3.putObject(key, read(ch, 0, u.size.toInt()), u.mime)
+                    reportProgress(backend, u.id, u.size)
                 } else {
                     val uploadId = u.uploadId ?: s3.createMultipart(key, u.mime).also { id ->
                         repo.update(u.id) { it.copy(uploadId = id, parts = emptyList()) }
@@ -115,6 +117,7 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
                     u = u.copy(uploadId = uploadId)
                     val total = ((u.size + PART - 1) / PART).toInt()
                     val parts = u.parts.toMutableList()
+                    reportProgress(backend, u.id, min(parts.size.toLong() * PART, u.size))
                     for (n in parts.size + 1..total) {
                         val offset = (n - 1).toLong() * PART
                         val bytes = read(ch, offset, min(PART.toLong(), u.size - offset).toInt())
@@ -128,6 +131,7 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
                         val done = min(n.toLong() * PART, u.size)
                         repo.update(u.id) { it.copy(state = UploadState.UPLOADING, parts = parts.toList(), uploaded = done) }
                         setProgress(u.name, done, u.size)
+                        reportProgress(backend, u.id, done)
                     }
                     s3.completeMultipart(key, uploadId, parts.map { it.n to it.etag })
                 }
@@ -186,6 +190,11 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
             bitmap.compress(Bitmap.CompressFormat.JPEG, 80, it)
             it.toByteArray()
         }
+    }
+
+    /** Publishes live progress to Redis for boards and other admins; never fails the upload. */
+    private fun reportProgress(backend: Backend, id: String, done: Long) {
+        runCatching { backend.setUploadProgress(id, done) }
     }
 
     private suspend fun setProgress(name: String, done: Long, total: Long) {

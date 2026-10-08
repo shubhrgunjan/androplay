@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Declares that AndroPlay handles modern video formats natively, so Android 12+
+  "compatible media transcoding" never hands us a re-encoded AVC copy of an
+  HEVC / HDR video. We upload originals byte-for-byte.
+-->
+<media-capabilities xmlns:android="http://schemas.android.com/apk/res/android">
+    <format android:name="HEVC" supported="true" />
+    <format android:name="HDR10" supported="true" />
+    <format android:name="HDR10Plus" supported="true" />
+    <format android:name="HLG" supported="true" />
+    <format android:name="Dolby-Vision" supported="true" />
+</media-capabilities>

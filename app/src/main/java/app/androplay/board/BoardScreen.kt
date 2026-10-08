@@ -73,6 +73,8 @@ fun BoardScreen(
     playerView: PlayerView,
     setupFlow: StateFlow<List<SetupStep>>,
     onSetup: (SetupStep) -> Unit,
+    showUnlockFlow: StateFlow<Boolean>,
+    onDismissUnlock: () -> Unit,
     onImport: () -> Unit,
     onSettings: () -> Unit,
 ) {
@@ -104,7 +106,9 @@ fun BoardScreen(
             if (libraryOpen && display !is Display.Idle) {
                 Surface(Modifier.fillMaxSize(), color = Color(0xF00B0F14)) { LibraryPanel(app, onImport) }
             }
+            IncomingUploadsCard(app, Modifier.align(Alignment.BottomEnd).padding(24.dp))
             if (setup.isNotEmpty()) SetupBanner(setup, onSetup, Modifier.align(Alignment.BottomCenter))
+            LockLayer(app, showUnlockFlow.collectAsState().value, onDismissUnlock)
         }
     }
 }
@@ -150,15 +154,11 @@ private fun IdlePanel(app: AndroPlayApp, onImport: () -> Unit, onSettings: () ->
                 ok = ble.advertising,
             )
             Text("${manifest.items.size} items on board · ${formatSize(manifest.freeBytes)} free", color = dim, fontSize = 18.sp)
-            sync.downloading?.let { name ->
-                Text("Downloading $name", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                LinearProgressIndicator(progress = { sync.downloadProgress }, modifier = Modifier.fillMaxWidth())
-                if (sync.pending > 1) Text("${sync.pending - 1} more queued", color = dim)
-            }
             Spacer(Modifier.weight(1f))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onImport) { Text("Import files") }
                 OutlinedButton(onClick = onSettings) { Text("Settings") }
+                OutlinedButton(onClick = { app.dispatch(Command.Lock(true)) }) { Text("Lock screen") }
             }
         }
         LibraryPanel(app, onImport = null)
