@@ -27,6 +27,8 @@ data class Content(
     val durationMs: Long = 0,
     val pageCount: Int = 0,
     val hasThumb: Boolean = false,
+    /** Bytes the uploader has sent so far (for live upload progress on every device). */
+    val uploaded: Long = 0,
 ) {
     fun isFor(boardId: String) = onlyOn.isEmpty() || onlyOn == boardId
 
@@ -37,6 +39,7 @@ data class Content(
         "size", size.toString(), "objectKey", objectKey, "status", if (ready) "ready" else "uploading",
         "origin", origin.name, "onlyOn", onlyOn, "addedBy", addedBy, "addedAt", addedAt.toString(),
         "durationMs", durationMs.toString(), "pageCount", pageCount.toString(), "thumb", if (hasThumb) "1" else "0",
+        "uploaded", uploaded.toString(),
     )
 
     companion object {
@@ -58,6 +61,7 @@ data class Content(
                 durationMs = h["durationMs"]?.toLongOrNull() ?: 0,
                 pageCount = h["pageCount"]?.toIntOrNull() ?: 0,
                 hasThumb = h["thumb"] == "1",
+                uploaded = h["uploaded"]?.toLongOrNull() ?: 0,
             )
         }
     }
@@ -152,6 +156,14 @@ class Backend(val config: BackendConfig) : Closeable {
         val cmds = mutableListOf(arrayOf("HSET", kItem(id), *fields.flatMap { listOf(it.first, it.second) }.toTypedArray()))
         if (emit) cmds += event("update", id)
         redis.pipeline(cmds)
+    }
+
+    /**
+     * Live upload progress. Emits a `progress` event so boards and other admins update in
+     * real time; call at most a few times per second (once per uploaded part is ideal).
+     */
+    fun setUploadProgress(id: String, uploaded: Long) {
+        redis.pipeline(listOf(arrayOf("HSET", kItem(id), "uploaded", uploaded.toString()), event("progress", id)))
     }
 
     fun markReady(id: String, objectKey: String, hasThumb: Boolean) {

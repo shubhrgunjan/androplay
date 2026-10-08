@@ -22,6 +22,8 @@ sealed interface Command {
     data object ToggleLibrary : Command
     /** Presentation order used by Next/Prev and for preloading. */
     data class SetQueue(val handles: List<Int>) : Command
+    /** Locks/unlocks the board's touchscreen (remotes and phones keep working). */
+    data class Lock(val locked: Boolean) : Command
     class Auth(val token: ByteArray) : Command
 
     companion object {
@@ -51,6 +53,7 @@ sealed interface Command {
                 OP_STOP -> Stop
                 OP_LIBRARY -> ToggleLibrary
                 OP_SET_QUEUE -> SetQueue(List(b.u16()) { b.u16() })
+                OP_LOCK -> Lock(b.get().toInt() != 0)
                 OP_AUTH -> Auth(ByteArray(b.remaining()).also { b.get(it) })
                 else -> null
             }
@@ -79,6 +82,7 @@ fun Command.encode(): ByteArray = when (this) {
             hs.forEach { putShort(it.toShort()) }
         }
     }
+    is Command.Lock -> frame(OP_LOCK, 1) { put(if (locked) 1 else 0) }
     is Command.Auth -> frame(OP_AUTH, token.size) { put(token) }
 }
 
@@ -105,4 +109,5 @@ private const val OP_PAGE = 0x0B
 private const val OP_STOP = 0x0C
 private const val OP_LIBRARY = 0x0D
 private const val OP_SET_QUEUE = 0x0E
+private const val OP_LOCK = 0x0F
 private const val OP_AUTH = 0x7F

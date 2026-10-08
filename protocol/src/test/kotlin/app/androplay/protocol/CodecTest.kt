@@ -11,7 +11,7 @@ class CodecTest {
             Command.Play(65000, 12_345), Command.Pause, Command.Resume, Command.Toggle,
             Command.Seek(3_600_000), Command.SeekBy(-10_000), Command.Volume(73), Command.ToggleMute,
             Command.Next, Command.Prev, Command.GoToPage(41), Command.Stop, Command.ToggleLibrary,
-            Command.SetQueue(listOf(1, 2, 300, 65000)),
+            Command.SetQueue(listOf(1, 2, 300, 65000)), Command.Lock(true), Command.Lock(false),
         )
         for (c in commands) assertEquals(c, Command.decode(c.encode()))
 
@@ -22,7 +22,7 @@ class CodecTest {
 
     @Test
     fun stateRoundTrip() {
-        val s = PlaybackState(Status.PAUSED, 42, 61_000, 3_600_000, 55, true, 3, 12, 99)
+        val s = PlaybackState(Status.PAUSED, 42, 61_000, 3_600_000, 55, true, 3, 12, 99, locked = true)
         val bytes = s.encode()
         assertEquals(PlaybackState.SIZE, bytes.size)
         assertEquals(s, PlaybackState.decode(bytes))
