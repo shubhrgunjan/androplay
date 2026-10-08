@@ -296,8 +296,29 @@ class BoardSync(
         }
     }
 
+    /**
+     * Never compete with what's on screen: pause entirely after lag was detected, and cap
+     * throughput (~6 MB/s) while something is playing. Off-screen, full speed.
+     */
+    private fun yieldToPresentation(bytes: Int) {
+        while (app.perf.quiet) Thread.sleep(500)
+        if (app.perf.presenting) Thread.sleep(bytes * 1000L / PRESENTING_BYTES_PER_SEC)
+    }
+
     private fun download(c: Content) {
         if (store.item(c.id) != null) return
+        // Low CPU/IO priority for the duration of this download; the pool thread is shared.
+        val tid = android.os.Process.myTid()
+        val previous = android.os.Process.getThreadPriority(tid)
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+        try {
+            downloadBody(c)
+        } finally {
+            android.os.Process.setThreadPriority(tid, previous)
+        }
+    }
+
+    private fun downloadBody(c: Content) {
         val part = File(store.incoming, "${c.id}.part")
         if (part.length() > c.size) part.delete()
         var offset = part.length()
@@ -319,6 +340,7 @@ class BoardSync(
                         if (n < 0) break
                         out.write(buf, 0, n)
                         offset += n
+                        yieldToPresentation(n)
                         val now = System.currentTimeMillis()
                         if (now - lastReport > 700) {
                             lastReport = now
@@ -362,6 +384,7 @@ class BoardSync(
     }
 
     private companion object {
+        const val PRESENTING_BYTES_PER_SEC = 6L * 1024 * 1024
         const val TAG = "BoardSync"
         const val STALE_UPLOAD_MS = 10 * 60_000L
     }

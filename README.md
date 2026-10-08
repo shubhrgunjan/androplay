@@ -73,6 +73,9 @@ adb shell pm grant $PKG android.permission.BLUETOOTH_CONNECT
 adb shell pm grant $PKG android.permission.POST_NOTIFICATIONS
 adb shell appops set $PKG MANAGE_EXTERNAL_STORAGE allow
 adb shell appops set $PKG SYSTEM_ALERT_WINDOW allow
+# never sleep / no screen saver while locked or presenting
+adb shell pm grant $PKG android.permission.WRITE_SECURE_SETTINGS
+adb shell appops set $PKG WRITE_SETTINGS allow
 # optional kiosk mode (app becomes the home screen)
 adb shell pm enable $PKG/.KioskLauncher
 ```
@@ -107,6 +110,12 @@ It protects:
 - unlocking a locked board
 
 The account is hardcoded; only a SHA-256 is stored. To change it, set `CREDENTIAL_HASH` in `app/src/main/java/app/androplay/core/AdminAuth.kt` to `sha256("USERNAME:password")` with the username in uppercase, e.g. `printf 'USERNAME:password' | shasum -a 256`.
+
+## Presentation safeguards (board)
+
+- **Performance guard.** While something plays, the board watches for dropped video frames, playback stalls, UI jank and low memory. When it detects lag it clears other apps' background processes, frees image caches and pauses its own downloads for 90 s. Before every Play it clears background apps in advance. Downloads are throttled (~6 MB/s) and low-priority while content is on screen.
+- **Screen keeper.** While the board is locked or showing anything, it holds a screen-on wake lock (this also covers documents opened in other apps), turns off Android's screen saver and stretches the screen timeout. Original settings come back when the board goes idle. The last two need the adb grants above.
+- **Limits.** Without root, an app can't kill foreground services, system apps or LG's own system processes, and can't override LG firmware power settings. Turn those off once in the board's settings (e.g. auto power-off / eco mode), or disable unneeded vendor apps with `adb shell pm disable-user --user 0 <package>`.
 
 ## Docs
 

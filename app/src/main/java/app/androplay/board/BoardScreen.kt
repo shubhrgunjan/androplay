@@ -148,6 +148,15 @@ private fun IdlePanel(app: AndroPlayApp, onImport: () -> Unit, onSettings: () ->
                 },
                 ok = sync.connected && sync.error == null,
             )
+            val guard by app.perf.status.collectAsState()
+            StatusLine(
+                "Performance",
+                when {
+                    guard.lastReason == null -> "guard on"
+                    else -> "guard on · last boost: ${guard.lastReason} · ${guard.appsCleared} apps cleared"
+                },
+                ok = !guard.quiet,
+            )
             StatusLine(
                 "Bluetooth",
                 ble.error ?: if (ble.advertising) "ready · ${ble.clients} connected" else "starting…",

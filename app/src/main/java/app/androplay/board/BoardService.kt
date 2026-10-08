@@ -43,6 +43,8 @@ class BoardService : Service() {
         super.onCreate()
         app = application as AndroPlayApp
         ServiceCompat.startForeground(this, 1, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        app.perf.start()
+        app.screenKeeper.start()
         startSync()
         restartBle()
         wifiLock = getSystemService(WifiManager::class.java)

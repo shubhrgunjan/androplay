@@ -75,6 +75,10 @@ class BoardActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Stable clocks instead of bursts that throttle mid-presentation (if the SoC supports it).
+        if (getSystemService(android.os.PowerManager::class.java)?.isSustainedPerformanceModeSupported == true) {
+            window.setSustainedPerformanceMode(true)
+        }
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).apply {
             hide(WindowInsetsCompat.Type.systemBars())

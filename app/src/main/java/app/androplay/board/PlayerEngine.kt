@@ -24,6 +24,7 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.ui.PlayerView
 import app.androplay.protocol.Command
 import app.androplay.protocol.ContentType
@@ -88,9 +89,26 @@ class PlayerEngine(
 
     private val audio = ctx.getSystemService(AudioManager::class.java)
 
+    /** Lag signals for [PerformanceGuard]. */
+    var onDroppedFrames: ((count: Int, elapsedMs: Long) -> Unit)? = null
+    var onStall: (() -> Unit)? = null
+
+    private val analytics = object : AnalyticsListener {
+        override fun onDroppedVideoFrames(eventTime: AnalyticsListener.EventTime, droppedFrames: Int, elapsedMs: Long) {
+            onDroppedFrames?.invoke(droppedFrames, elapsedMs)
+        }
+    }
+
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
-            if (player === active) publish()
+            if (player !== active) return
+            // Buffering mid-playback of a *local* file means the device is struggling.
+            if (events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED) && player.playbackState == Player.STATE_BUFFERING &&
+                player.playWhenReady && player.currentPosition > 1_000
+            ) {
+                onStall?.invoke()
+            }
+            publish()
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -136,6 +154,11 @@ class PlayerEngine(
                 delay(if (active.isPlaying) 500 else 1500)
             }
         }
+    }
+
+    /** Frees decoded images/PDF pages (the one on screen stays referenced by [display]). */
+    fun trimCaches() {
+        stills.evictAll()
     }
 
     fun needsScreen(): Boolean =
@@ -421,5 +444,8 @@ class PlayerEngine(
             false,
         )
         .build()
-        .also { it.addListener(listener) }
+        .also {
+            it.addListener(listener)
+            it.addAnalyticsListener(analytics)
+        }
 }
