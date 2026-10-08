@@ -6,13 +6,13 @@ Status: ✅ done · 🚧 in progress · ⏳ next
 |---|---|---|---|
 | 0 | Repo & docs | README, architecture, plan, Gradle skeleton (AGP 9.4, Kotlin 2.4, Gradle 9.8) | ✅ |
 | 1 | Shared protocol | Content types, binary command codec, playback state, fingerprint, unit tests | ✅ |
-| 2 | Single app shell | `:app` module, role picker (Board/Admin), backend config screen + setup QR | 🚧 |
-| 3 | Redis layer | TLS client, key schema, heartbeat, stream consumer with cursor, pub/sub commands & state | ⏳ |
-| 4 | Storage layer | S3/R2 SigV4 signing, resumable multipart upload, ranged resumable download, fingerprint verify | ⏳ |
-| 5 | Board role | Sync service, local cache + indexer, player engine (A/B ExoPlayer, images, PDF, external docs), HID keys, boot/kiosk | ⏳ (engine prototyped) |
-| 6 | Admin role | Library by type, per-board sync badges, upload queue (WorkManager), share target, remote bar | ⏳ |
-| 7 | BLE fast path | Board GATT server + admin central, auth token, auto-fallback to Redis | ⏳ (prototyped) |
-| 8 | Hardening | Reconnect/backoff, storage quota & eviction, crash-safe state, CI build, release signing | ⏳ |
+| 2 | Single app shell | `:app` module, role picker (Board/Admin), backend config screen, shareable setup code, adb provisioning | ✅ |
+| 3 | Redis layer | Built-in RESP2/TLS client, key schema, heartbeat, stream consumer, pub/sub commands & state | ✅ (needs live test) |
+| 4 | Storage layer | S3/R2 SigV4 signing, resumable multipart upload, ranged resumable download, presigned thumbs, fingerprint verify | ✅ (needs live test) |
+| 5 | Board role | Sync service, local cache + indexer, player engine (A/B ExoPlayer, images, PDF, external docs), HID keys, boot/kiosk | ✅ |
+| 6 | Admin role | Library by type, per-board sync badges, upload queue (WorkManager), share target, remote bar | ✅ |
+| 7 | BLE fast path | Board GATT server + admin central, token via Redis, auto-fallback to Redis | ✅ |
+| 8 | Hardening (next) | Reconnect/backoff, storage quota & eviction, crash-safe state, CI build, release signing | ⏳ |
 
 ## Milestones
 

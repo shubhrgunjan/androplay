@@ -121,7 +121,7 @@ Either way the board swaps to the preloaded player or starts the local file in 1
 
 ## Security (v1 vs. later)
 
-- v1: the Redis URL and storage keys are provisioned once per device (encrypted SharedPreferences, or a setup QR shown on the board). TLS is used everywhere (`rediss://`, HTTPS). Fine for a closed set of lab devices.
+- v1: the Redis URL and storage keys are provisioned once per device (app-private SharedPreferences, via the setup screen, a shareable setup code, or adb). TLS is used everywhere (`rediss://`, HTTPS). Fine for a closed set of lab devices.
 - Later: a small auth API issuing per-device Redis ACL users and presigned storage URLs, so no master credentials live on phones.
 
 ## Shared protocol module

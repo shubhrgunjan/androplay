@@ -31,12 +31,15 @@ One Android app, two roles:
 
 ## Tech
 
-Kotlin · Jetpack Compose · Media3 ExoPlayer · Redis (Jedis, TLS) · S3-compatible storage (Cloudflare R2 by default) · BLE GATT · WorkManager
+Kotlin · Jetpack Compose · Media3 ExoPlayer · Redis (built-in RESP client over TLS) · S3-compatible storage (Cloudflare R2 by default) · BLE GATT · WorkManager
 
 ## Repo layout
 
 ```
-app/        single Android app (board + admin roles)       ← in progress
+app/        single Android app
+  core/     Redis (RESP/TLS) client + key schema, S3/R2 client, settings
+  board/    sync engine, local store, player engine, BLE server, board UI
+  admin/    upload queue, repository, BLE client, admin UI
 protocol/   shared models, binary command codec, fingerprint (pure Kotlin, unit-tested)
 docs/       ARCHITECTURE.md, PLAN.md
 ```
@@ -64,7 +67,24 @@ adb shell appops set $PKG SYSTEM_ALERT_WINDOW allow
 adb shell pm enable $PKG/.KioskLauncher
 ```
 
-Open the app on the board, choose **Board**, and enter the backend config (or scan the setup QR from an admin device).
+Open the app on the board, choose **Board**, and enter the backend config, or paste a **setup code** copied from an admin device. Headless provisioning:
+
+```bash
+adb shell am start -n app.androplay/.MainActivity --es role BOARD --es config <setup-code>
+```
+
+### Zero-setup lab builds (optional)
+
+Put defaults in `local.properties` (never committed) and every device built from it comes preconfigured:
+
+```properties
+androplay.redisUrl=rediss://default:<password>@<host>:6379
+androplay.s3Endpoint=https://<account-id>.r2.cloudflarestorage.com
+androplay.s3Bucket=androplay
+androplay.s3Region=auto
+androplay.s3AccessKey=...
+androplay.s3SecretKey=...
+```
 
 ## Docs
 
@@ -73,4 +93,4 @@ Open the app on the board, choose **Board**, and enter the backend config (or sc
 
 ## Security note
 
-v1 keeps the Redis and storage credentials on trusted lab devices (encrypted prefs, entered once or provisioned by QR). A thin auth API that hands out scoped tokens is planned before any wider rollout. See the architecture doc.
+v1 keeps the Redis and storage credentials on trusted lab devices (app-private storage, entered once or provisioned with a setup code). A thin auth API that hands out scoped tokens is planned before any wider rollout. See the architecture doc.

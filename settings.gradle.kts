@@ -16,4 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "AndroPlay"
 
-include(":protocol")
+include(":protocol", ":app")
