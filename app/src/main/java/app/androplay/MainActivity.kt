@@ -27,6 +27,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -107,59 +108,82 @@ class MainActivity : ComponentActivity() {
         var code by remember { mutableStateOf("") }
         var status by remember { mutableStateOf<String?>(null) }
         var testing by remember { mutableStateOf(false) }
+        // Builds ship with the lab backend, so the only real question is "board or phone?".
+        var showBackend by remember { mutableStateOf(!cfg.isComplete) }
+        val bigScreen = resources.configuration.smallestScreenWidthDp >= 600
+
+        fun choose(r: Role) {
+            role = r
+            if (cfg.isComplete) onSave(r, name.trim().ifEmpty { s.deviceName }, cfg.normalized()) else showBackend = true
+        }
 
         Column(
             Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Column(Modifier.widthIn(max = 640.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.widthIn(max = 640.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Text("AndroPlay", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-                Text("What is this device?", style = MaterialTheme.typography.titleMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    RoleCard("Board", "Plays content full-screen. Use on the CreateBoard.", role == Role.BOARD, Modifier.weight(1f)) { role = Role.BOARD }
-                    RoleCard("Admin", "Upload content and control boards. Use on phones.", role == Role.ADMIN, Modifier.weight(1f)) { role = Role.ADMIN }
-                }
-                OutlinedTextField(name, { name = it }, label = { Text("Device name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Text("What is this device?", style = MaterialTheme.typography.titleLarge)
+                RoleCard(
+                    title = "Phone / Admin",
+                    text = "Upload videos, images and PDFs, and control the board.",
+                    badge = if (!bigScreen) "Recommended for this device" else null,
+                    selected = role == Role.ADMIN,
+                ) { choose(Role.ADMIN) }
+                RoleCard(
+                    title = "Board / Player",
+                    text = "Full-screen player for the CreateBoard. Syncs and plays content.",
+                    badge = if (bigScreen) "Recommended for this device" else null,
+                    selected = role == Role.BOARD,
+                ) { choose(Role.BOARD) }
 
-                Text("Backend", style = MaterialTheme.typography.titleMedium)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(code, { code = it }, label = { Text("Setup code (optional)") }, singleLine = true, modifier = Modifier.weight(1f))
-                    OutlinedButton(onClick = {
-                        BackendConfig.fromCode(code)?.let { cfg = it; status = "Setup code applied" } ?: run { status = "Invalid setup code" }
-                    }) { Text("Apply") }
+                TextButton(onClick = { showBackend = !showBackend }) {
+                    Text(if (showBackend) "Hide backend settings" else "Backend settings")
                 }
-                Field("Redis URL (rediss://default:password@host:port)", cfg.redisUrl) { cfg = cfg.copy(redisUrl = it) }
-                Field("Key prefix", cfg.prefix) { cfg = cfg.copy(prefix = it) }
-                Field("S3 endpoint (e.g. https://<account>.r2.cloudflarestorage.com)", cfg.s3Endpoint) { cfg = cfg.copy(s3Endpoint = it) }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Field("Bucket", cfg.bucket, Modifier.weight(1f)) { cfg = cfg.copy(bucket = it) }
-                    Field("Region", cfg.s3Region, Modifier.weight(1f)) { cfg = cfg.copy(s3Region = it) }
-                }
-                Field("Access key", cfg.accessKey) { cfg = cfg.copy(accessKey = it) }
-                Field("Secret key", cfg.secretKey, secret = true) { cfg = cfg.copy(secretKey = it) }
+                if (showBackend) {
+                    OutlinedTextField(name, { name = it }, label = { Text("Device name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(code, { code = it }, label = { Text("Setup code (optional)") }, singleLine = true, modifier = Modifier.weight(1f))
+                        OutlinedButton(onClick = {
+                            BackendConfig.fromCode(code)?.let { cfg = it; status = "Setup code applied" } ?: run { status = "Invalid setup code" }
+                        }) { Text("Apply") }
+                    }
+                    Field("Redis URL (rediss://default:password@host:port)", cfg.redisUrl) { cfg = cfg.copy(redisUrl = it) }
+                    Field("Key prefix", cfg.prefix) { cfg = cfg.copy(prefix = it) }
+                    Field("S3 endpoint", cfg.s3Endpoint) { cfg = cfg.copy(s3Endpoint = it) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Field("Bucket", cfg.bucket, Modifier.weight(1f)) { cfg = cfg.copy(bucket = it) }
+                        Field("Region", cfg.s3Region, Modifier.weight(1f)) { cfg = cfg.copy(s3Region = it) }
+                    }
+                    Field("Access key", cfg.accessKey) { cfg = cfg.copy(accessKey = it) }
+                    Field("Secret key", cfg.secretKey, secret = true) { cfg = cfg.copy(secretKey = it) }
+                    OutlinedButton(onClick = { cfg = BackendConfig.buildDefault; status = "Restored built-in backend" }) {
+                        Text("Use built-in backend")
+                    }
 
-                status?.let { Text(it, color = MaterialTheme.colorScheme.tertiary) }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        enabled = cfg.isComplete && !testing,
-                        onClick = {
-                            testing = true
-                            status = "Testing…"
-                            scope.launch {
-                                cfg = cfg.normalized()
-                                status = withContext(Dispatchers.IO) { test(cfg) }
-                                testing = false
-                            }
-                        },
-                    ) { Text("Test connection") }
-                    OutlinedButton(enabled = cfg.isComplete, onClick = {
-                        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("AndroPlay setup", cfg.toCode()))
-                        Toast.makeText(this@MainActivity, "Setup code copied. Paste it on other devices.", Toast.LENGTH_LONG).show()
-                    }) { Text("Copy setup code") }
-                    Button(
-                        enabled = role != null && cfg.isComplete && name.isNotBlank(),
-                        onClick = { onSave(role!!, name.trim(), cfg.normalized()) },
-                    ) { Text("Save & start") }
+                    status?.let { Text(it, color = MaterialTheme.colorScheme.tertiary) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            enabled = cfg.isComplete && !testing,
+                            onClick = {
+                                testing = true
+                                status = "Testing…"
+                                scope.launch {
+                                    cfg = cfg.normalized()
+                                    status = withContext(Dispatchers.IO) { test(cfg) }
+                                    testing = false
+                                }
+                            },
+                        ) { Text("Test") }
+                        OutlinedButton(enabled = cfg.isComplete, onClick = {
+                            getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("AndroPlay setup", cfg.toCode()))
+                            Toast.makeText(this@MainActivity, "Setup code copied", Toast.LENGTH_SHORT).show()
+                        }) { Text("Copy code") }
+                        Button(
+                            enabled = role != null && cfg.isComplete && name.isNotBlank(),
+                            onClick = { onSave(role!!, name.trim(), cfg.normalized()) },
+                        ) { Text("Save") }
+                    }
                 }
             }
         }
@@ -175,17 +199,18 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun RoleCard(title: String, text: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    private fun RoleCard(title: String, text: String, badge: String?, selected: Boolean, onClick: () -> Unit) {
         Card(
             onClick = onClick,
-            modifier = modifier,
+            modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
                 containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
             ),
         ) {
-            Column(Modifier.padding(16.dp)) {
-                Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                Text(text, style = MaterialTheme.typography.bodyMedium)
+            Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                badge?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) }
+                Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Text(text, style = MaterialTheme.typography.bodyLarge)
             }
         }
     }
