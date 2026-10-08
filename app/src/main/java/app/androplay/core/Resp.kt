@@ -36,9 +36,19 @@ data class RedisUrl(
     val db: Int,
 ) {
     companion object {
+        /**
+         * Pulls a Redis URL out of whatever was pasted (e.g. a whole `redis-cli --tls -u …` line)
+         * and upgrades it to TLS when the source asked for it or the host requires it (Upstash).
+         */
+        fun normalize(raw: String): String {
+            val url = Regex("rediss?://\\S+").find(raw)?.value ?: raw.trim()
+            val wantsTls = "--tls" in raw || ".upstash.io" in url
+            return if (wantsTls && url.startsWith("redis://")) "rediss://" + url.removePrefix("redis://") else url
+        }
+
         /** `redis://` or `rediss://[user[:password]@]host[:port][/db]` */
         fun parse(url: String): RedisUrl {
-            val u = URI(url.trim())
+            val u = URI(normalize(url))
             val tls = u.scheme == "rediss"
             require(tls || u.scheme == "redis") { "Redis URL must start with redis:// or rediss://" }
             val info = u.rawUserInfo?.split(':', limit = 2)?.map { URLDecoder.decode(it, "UTF-8") }
