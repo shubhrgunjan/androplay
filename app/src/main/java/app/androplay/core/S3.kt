@@ -20,10 +20,11 @@ import javax.crypto.spec.SecretKeySpec
  * Just enough S3 for AndroPlay (path-style, SigV4): works with Cloudflare R2, AWS S3, MinIO,
  * Backblaze B2. Objects are keyed by content id, so names never need URL escaping.
  */
-class S3(private val cfg: BackendConfig, private val http: OkHttpClient) {
+class S3(config: BackendConfig, private val http: OkHttpClient) {
+    private val cfg = config.normalized()
     class S3Error(val code: Int, val body: String) : IOException("S3 $code: ${body.take(300)}")
 
-    private val endpoint: HttpUrl = cfg.s3Endpoint.trim().trimEnd('/').toHttpUrl()
+    private val endpoint: HttpUrl = cfg.s3Endpoint.toHttpUrl()
     private val region = cfg.s3Region.ifBlank { "auto" }
 
     fun putObject(key: String, bytes: ByteArray, contentType: String) {

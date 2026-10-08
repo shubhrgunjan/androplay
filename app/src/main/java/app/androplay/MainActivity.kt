@@ -45,7 +45,6 @@ import app.androplay.board.BoardActivity
 import app.androplay.board.BoardService
 import app.androplay.core.Backend
 import app.androplay.core.BackendConfig
-import app.androplay.core.RedisUrl
 import app.androplay.core.Role
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -147,6 +146,7 @@ class MainActivity : ComponentActivity() {
                             testing = true
                             status = "Testing…"
                             scope.launch {
+                                cfg = cfg.normalized()
                                 status = withContext(Dispatchers.IO) { test(cfg) }
                                 testing = false
                             }
@@ -158,7 +158,7 @@ class MainActivity : ComponentActivity() {
                     }) { Text("Copy setup code") }
                     Button(
                         enabled = role != null && cfg.isComplete && name.isNotBlank(),
-                        onClick = { onSave(role!!, name.trim(), cfg.copy(redisUrl = RedisUrl.normalize(cfg.redisUrl), s3Endpoint = cfg.s3Endpoint.trim())) },
+                        onClick = { onSave(role!!, name.trim(), cfg.normalized()) },
                     ) { Text("Save & start") }
                 }
             }

@@ -27,6 +27,21 @@ data class BackendConfig(
     val isComplete: Boolean
         get() = listOf(redisUrl, s3Endpoint, bucket, accessKey, secretKey).all { it.isNotBlank() }
 
+    /** Fixes common paste mistakes: repeated schemes ("https://https://…"), spaces, trailing slashes. */
+    fun normalized(): BackendConfig {
+        val raw = s3Endpoint.trim().replace(" ", "")
+        val host = raw.substringAfterLast("://").trimEnd('/')
+        val scheme = if (raw.startsWith("http://") && !raw.contains("https://")) "http" else "https"
+        return copy(
+            redisUrl = RedisUrl.normalize(redisUrl),
+            s3Endpoint = if (host.isEmpty()) "" else "$scheme://$host",
+            bucket = bucket.trim(),
+            s3Region = s3Region.trim().ifEmpty { "auto" },
+            accessKey = accessKey.trim(),
+            secretKey = secretKey.trim(),
+        )
+    }
+
     fun toCode(): String =
         Base64.encodeToString(ProtocolJson.encodeToString(this).encodeToByteArray(), Base64.NO_WRAP or Base64.URL_SAFE)
 
