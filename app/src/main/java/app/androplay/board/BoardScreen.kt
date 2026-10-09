@@ -54,6 +54,7 @@ import androidx.media3.ui.PlayerView
 import app.androplay.AndroPlayApp
 import app.androplay.board.PlayerEngine.Display
 import app.androplay.core.flatten
+import app.androplay.core.playAllSlides
 import app.androplay.core.slideshowCommand
 import app.androplay.protocol.Command
 import app.androplay.protocol.ContentType
@@ -223,7 +224,7 @@ private fun LibraryPanel(app: AndroPlayApp, onImport: (() -> Unit)?) {
                 Text("Slideshows", color = Color.White.copy(alpha = 0.7f), fontSize = 16.sp)
                 val all = shows.associateBy { it.id }
                 val handleOf: (String) -> Int? = { app.store.item(it)?.handle }
-                slideshowCommand(shows.flatMap { it.flatten(all) }, loop = true, handleOf)?.let { cmd ->
+                slideshowCommand(playAllSlides(shows), loop = true, handleOf)?.let { cmd ->
                     Button(onClick = { app.dispatch(cmd) }) { Text("▶ Play all") }
                 }
                 shows.forEach { show ->

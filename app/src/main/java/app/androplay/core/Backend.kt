@@ -141,6 +141,16 @@ fun Slideshow.flatten(all: Map<String, Slideshow>, visiting: Set<String> = empty
     }
 }
 
+/**
+ * Slides for "Play all": every slideshow in list order, except ones already embedded in
+ * another slideshow (they play inside their parent, so they aren't repeated).
+ */
+fun playAllSlides(shows: List<Slideshow>): List<Slide> {
+    val all = shows.associateBy { it.id }
+    val embedded = shows.flatMap { s -> s.items.mapNotNull { Slideshow.showIdOf(it) } }.toSet()
+    return shows.filter { it.id !in embedded }.flatMap { it.flatten(all) }
+}
+
 /** Builds the board command for [slides], keeping only items the board has ([handleOf] != null). */
 fun slideshowCommand(slides: List<Slide>, loop: Boolean, handleOf: (String) -> Int?): Command.Slideshow? {
     val playable = slides.mapNotNull { s -> handleOf(s.contentId)?.let { it to s.seconds } }

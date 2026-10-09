@@ -14,6 +14,7 @@ import app.androplay.core.RedisSubscriber
 import app.androplay.core.S3
 import app.androplay.core.Slideshow
 import app.androplay.core.flatten
+import app.androplay.core.playAllSlides
 import app.androplay.core.slideshowCommand
 import app.androplay.core.unb64
 import app.androplay.protocol.Command
@@ -246,9 +247,7 @@ class AdminRepository(private val app: AndroPlayApp) {
 
     /** Plays every slideshow back to back, in list order. */
     suspend fun playAll(loop: Boolean): Int {
-        val all = shows.value.associateBy { it.id }
-        val slides = shows.value.flatMap { it.flatten(all) }
-        val cmd = slideshowCommand(slides, loop, ::readyHandle) ?: return 0
+        val cmd = slideshowCommand(playAllSlides(shows.value), loop, ::readyHandle) ?: return 0
         send(cmd)
         return cmd.handles.size
     }

@@ -3,14 +3,24 @@ package app.androplay.admin
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -36,22 +46,62 @@ fun UpdateBanner(repo: AdminRepository) {
     val state by repo.updater.state.collectAsState()
     if (state is UpdateState.UpToDate) return
 
-    Card(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            when (val s = state) {
-                is UpdateState.Available -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Update available: v${s.release.versionName}", fontWeight = FontWeight.SemiBold)
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            val failed = state is UpdateState.Failed
+            Box(
+                Modifier.size(36.dp).background(
+                    if (failed) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primary,
+                    CircleShape,
+                ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (failed) Icons.Default.ErrorOutline else Icons.Default.SystemUpdate,
+                    null,
+                    tint = if (failed) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                when (val s = state) {
+                    is UpdateState.Available -> {
+                        Text("Update available · v${s.release.versionName}", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
                         Text(
                             "You have v${BuildConfig.VERSION_NAME}" + if (s.release.notes.isNotBlank()) " · ${s.release.notes}" else "",
-                            style = MaterialTheme.typography.labelMedium,
+                            style = MaterialTheme.typography.labelSmall,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
+                    is UpdateState.Downloading -> {
+                        Text(
+                            "Downloading v${s.release.versionName}… ${(s.progress * 100).toInt()}%",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        LinearProgressIndicator(progress = { s.progress }, modifier = Modifier.fillMaxWidth())
+                    }
+                    is UpdateState.Installing -> {
+                        Text("Installing v${s.release.versionName}…", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                        Text("The app will restart", style = MaterialTheme.typography.labelSmall)
+                    }
+                    is UpdateState.Failed -> {
+                        Text("Update failed", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                        Text(s.message, style = MaterialTheme.typography.labelSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                    UpdateState.UpToDate -> Unit
+                }
+            }
+            when (val s = state) {
+                is UpdateState.Available -> {
+                    Spacer(Modifier.width(8.dp))
                     Button(onClick = {
                         if (!repo.updater.canInstall()) {
                             // One-time: Android must allow AndroPlay to install updates.
@@ -63,16 +113,11 @@ fun UpdateBanner(repo: AdminRepository) {
                         }
                     }) { Text("Update") }
                 }
-                is UpdateState.Downloading -> {
-                    Text("Downloading v${s.release.versionName}… ${(s.progress * 100).toInt()}%")
-                    LinearProgressIndicator(progress = { s.progress }, modifier = Modifier.fillMaxWidth())
+                is UpdateState.Failed -> {
+                    Spacer(Modifier.width(8.dp))
+                    FilledTonalButton(onClick = { scope.launch { repo.updater.check() } }) { Text("Retry") }
                 }
-                is UpdateState.Installing -> Text("Installing v${s.release.versionName}… the app will restart")
-                is UpdateState.Failed -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Update failed: ${s.message}", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                    Button(onClick = { scope.launch { repo.updater.check() } }) { Text("Retry") }
-                }
-                UpdateState.UpToDate -> Unit
+                else -> Unit
             }
         }
     }
