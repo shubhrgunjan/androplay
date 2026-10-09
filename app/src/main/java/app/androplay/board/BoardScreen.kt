@@ -53,6 +53,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.ui.PlayerView
 import app.androplay.AndroPlayApp
 import app.androplay.board.PlayerEngine.Display
+import app.androplay.core.flatten
+import app.androplay.core.slideshowCommand
 import app.androplay.protocol.Command
 import app.androplay.protocol.ContentType
 import app.androplay.protocol.Item
@@ -219,12 +221,16 @@ private fun LibraryPanel(app: AndroPlayApp, onImport: (() -> Unit)?) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("Slideshows", color = Color.White.copy(alpha = 0.7f), fontSize = 16.sp)
+                val all = shows.associateBy { it.id }
+                val handleOf: (String) -> Int? = { app.store.item(it)?.handle }
+                slideshowCommand(shows.flatMap { it.flatten(all) }, loop = true, handleOf)?.let { cmd ->
+                    Button(onClick = { app.dispatch(cmd) }) { Text("▶ Play all") }
+                }
                 shows.forEach { show ->
-                    val handles = show.items.mapNotNull { app.store.item(it)?.handle }
-                    Button(
-                        enabled = handles.isNotEmpty(),
-                        onClick = { app.dispatch(Command.Slideshow(handles, show.imageSeconds, show.loop)) },
-                    ) { Text("▶ ${show.name} (${handles.size})") }
+                    val cmd = slideshowCommand(show.flatten(all), show.loop, handleOf)
+                    Button(enabled = cmd != null, onClick = { cmd?.let(app::dispatch) }) {
+                        Text("▶ ${show.name} (${cmd?.handles?.size ?: 0})")
+                    }
                 }
             }
         }

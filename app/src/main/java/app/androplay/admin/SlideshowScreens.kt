@@ -94,7 +94,7 @@ fun SlideshowsPane(repo: AdminRepository, entries: List<Entry>, onEdit: (Slidesh
     }
     LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         items(shows, key = { it.id }) { show ->
-            val ready = repo.playableHandles(show).size
+            val ready = repo.playableCount(show)
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(show.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)

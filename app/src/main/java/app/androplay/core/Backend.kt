@@ -101,16 +101,52 @@ data class BoardInfo(
     }
 }
 
-/** An ordered series of content played one after another (stored as JSON in `ap:shows`). */
+/**
+ * An ordered series played one after another (stored as JSON in `ap:shows`).
+ * Items are content ids, or `show:<id>` to embed another slideshow (slideshow of slideshows).
+ */
 @Serializable
 data class Slideshow(
     val id: String,
     val name: String,
-    val items: List<String> = emptyList(), // content ids, in play order
+    val items: List<String> = emptyList(),
     val imageSeconds: Int = 8, // how long each image / PDF page stays up
     val loop: Boolean = true,
     val updatedAt: Long = System.currentTimeMillis(),
-)
+    /** Position in the slideshow list (drag to reorder); also the order used by "Play all". */
+    val position: Int = 0,
+) {
+    companion object {
+        const val SHOW_PREFIX = "show:"
+
+        fun ref(showId: String) = SHOW_PREFIX + showId
+
+        fun showIdOf(item: String): String? = item.takeIf { it.startsWith(SHOW_PREFIX) }?.removePrefix(SHOW_PREFIX)
+    }
+}
+
+/** One playable slide after expanding nested slideshows. */
+data class Slide(val contentId: String, val seconds: Int)
+
+/**
+ * Expands nested slideshows depth-first. Each slide keeps the timing of the slideshow it
+ * came from; a slideshow that (indirectly) contains itself is skipped instead of looping forever.
+ */
+fun Slideshow.flatten(all: Map<String, Slideshow>, visiting: Set<String> = emptySet()): List<Slide> {
+    if (id in visiting) return emptyList()
+    val path = visiting + id
+    return items.flatMap { item ->
+        val nested = Slideshow.showIdOf(item)
+        if (nested != null) all[nested]?.flatten(all, path).orEmpty() else listOf(Slide(item, imageSeconds))
+    }
+}
+
+/** Builds the board command for [slides], keeping only items the board has ([handleOf] != null). */
+fun slideshowCommand(slides: List<Slide>, loop: Boolean, handleOf: (String) -> Int?): Command.Slideshow? {
+    val playable = slides.mapNotNull { s -> handleOf(s.contentId)?.let { it to s.seconds } }
+    if (playable.isEmpty()) return null
+    return Command.Slideshow(playable.map { it.first }, playable.first().second, loop, 0, playable.map { it.second })
+}
 
 /** Sync status of one board: what it has and what it's downloading. */
 data class BoardSyncState(val have: Set<String> = emptySet(), val progress: Map<String, Long> = emptyMap())
@@ -214,11 +250,16 @@ class Backend(val config: BackendConfig) : Closeable {
     fun slideshows(): List<Slideshow> =
         (redis.call("HGETALL", kShows) as? List<*>)?.toStringMap()?.values
             ?.mapNotNull { runCatching { ProtocolJson.decodeFromString<Slideshow>(it) }.getOrNull() }
-            ?.sortedByDescending { it.updatedAt }
+            ?.sortedWith(compareBy<Slideshow> { it.position }.thenByDescending { it.updatedAt })
             .orEmpty()
 
-    fun putSlideshow(show: Slideshow) {
-        redis.pipeline(listOf(arrayOf("HSET", kShows, show.id, ProtocolJson.encodeToString(show)), event("show", show.id)))
+    fun putSlideshow(show: Slideshow) = putSlideshows(listOf(show))
+
+    /** Saves several at once (e.g. new positions after a drag) with a single event. */
+    fun putSlideshows(shows: List<Slideshow>) {
+        if (shows.isEmpty()) return
+        val fields = shows.flatMap { listOf(it.id, ProtocolJson.encodeToString(it)) }.toTypedArray()
+        redis.pipeline(listOf(arrayOf("HSET", kShows, *fields), event("show", shows.first().id)))
     }
 
     fun deleteSlideshow(id: String) {

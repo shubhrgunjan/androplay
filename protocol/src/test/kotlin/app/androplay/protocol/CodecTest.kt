@@ -13,6 +13,7 @@ class CodecTest {
             Command.Next, Command.Prev, Command.GoToPage(41), Command.Stop, Command.ToggleLibrary,
             Command.SetQueue(listOf(1, 2, 300, 65000)), Command.Lock(true), Command.Lock(false),
             Command.Slideshow(listOf(5, 9, 1200), 8, loop = true, start = 1), Command.Slideshow(emptyList(), 30, loop = false),
+            Command.Slideshow(listOf(5, 9, 5), 4, loop = true, start = 2, seconds = listOf(4, 12, 30)),
         )
         for (c in commands) assertEquals(c, Command.decode(c.encode()))
 

@@ -28,7 +28,16 @@ sealed interface Command {
      * Plays [handles] in order, auto-advancing: media when it ends, images and PDF pages after
      * [imageSeconds]. Next/Prev/Pause work inside the show; Play or Stop ends it.
      */
-    data class Slideshow(val handles: List<Int>, val imageSeconds: Int, val loop: Boolean, val start: Int = 0) : Command
+    data class Slideshow(
+        val handles: List<Int>,
+        val imageSeconds: Int,
+        val loop: Boolean,
+        val start: Int = 0,
+        /** Per-slide seconds (same size as [handles]); lets nested slideshows keep their own timing. */
+        val seconds: List<Int> = emptyList(),
+    ) : Command {
+        fun secondsAt(i: Int): Int = seconds.getOrNull(i) ?: imageSeconds
+    }
     class Auth(val token: ByteArray) : Command
 
     companion object {
@@ -59,6 +68,18 @@ sealed interface Command {
                 OP_LIBRARY -> ToggleLibrary
                 OP_SET_QUEUE -> SetQueue(List(b.u16()) { b.u16() })
                 OP_LOCK -> Lock(b.get().toInt() != 0)
+                OP_SLIDESHOW_TIMED -> {
+                    val loop = b.get().toInt() != 0
+                    val start = b.u16()
+                    val n = b.u16()
+                    val hs = ArrayList<Int>(n)
+                    val secs = ArrayList<Int>(n)
+                    repeat(n) {
+                        hs += b.u16()
+                        secs += b.u16()
+                    }
+                    Slideshow(hs, secs.firstOrNull() ?: 8, loop, start, secs)
+                }
                 OP_SLIDESHOW -> {
                     val seconds = b.u16()
                     val loop = b.get().toInt() != 0
@@ -94,7 +115,18 @@ fun Command.encode(): ByteArray = when (this) {
         }
     }
     is Command.Lock -> frame(OP_LOCK, 1) { put(if (locked) 1 else 0) }
-    is Command.Slideshow -> {
+    is Command.Slideshow -> if (seconds.isNotEmpty()) {
+        val n = minOf(handles.size, Command.MAX_QUEUE)
+        frame(OP_SLIDESHOW_TIMED, 5 + n * 4) {
+            put(if (loop) 1 else 0)
+            putShort(start.toShort())
+            putShort(n.toShort())
+            for (i in 0 until n) {
+                putShort(handles[i].toShort())
+                putShort(secondsAt(i).coerceIn(1, 3600).toShort())
+            }
+        }
+    } else {
         val hs = handles.take(Command.MAX_QUEUE)
         frame(OP_SLIDESHOW, 7 + hs.size * 2) {
             putShort(imageSeconds.coerceIn(1, 3600).toShort())
@@ -132,4 +164,5 @@ private const val OP_LIBRARY = 0x0D
 private const val OP_SET_QUEUE = 0x0E
 private const val OP_LOCK = 0x0F
 private const val OP_SLIDESHOW = 0x10
+private const val OP_SLIDESHOW_TIMED = 0x11
 private const val OP_AUTH = 0x7F

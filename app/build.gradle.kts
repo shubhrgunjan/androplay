@@ -67,4 +67,5 @@ dependencies {
     implementation(libs.work.runtime)
     implementation(libs.okhttp)
     implementation(libs.coil.compose)
+    implementation(libs.reorderable)
 }

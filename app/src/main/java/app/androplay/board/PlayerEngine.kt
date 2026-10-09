@@ -185,14 +185,8 @@ class PlayerEngine(
             is Command.SeekBy -> seekTo(active.currentPosition + cmd.deltaMs)
             is Command.Volume -> setVolume(cmd.percent)
             Command.ToggleMute -> audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_TOGGLE_MUTE, 0)
-            Command.Next -> {
-                step(+1)
-                armShow()
-            }
-            Command.Prev -> {
-                step(-1)
-                armShow()
-            }
+            Command.Next -> if (show != null) showStep(+1, auto = false) else step(+1)
+            Command.Prev -> if (show != null) showStep(-1, auto = false) else step(-1)
             is Command.GoToPage -> current?.takeIf { it.type == ContentType.PDF }?.let { showPage(it, cmd.page) }
             Command.Stop -> {
                 endShow()
@@ -290,7 +284,10 @@ class PlayerEngine(
 
     // --- Slideshow ----------------------------------------------------------------------------
 
-    private class Show(val handles: List<Int>, val stillMs: Long, val loop: Boolean)
+    /** A running slideshow. Index-based, so the same item may appear several times. */
+    private class Show(val handles: List<Int>, val seconds: List<Int>, val loop: Boolean) {
+        var index = 0
+    }
 
     private var show: Show? = null
     private var showTimer: Job? = null
@@ -298,14 +295,15 @@ class PlayerEngine(
 
     private fun startShow(cmd: Command.Slideshow) {
         // Documents open in other apps and can't be timed, so they're skipped.
-        val playable = cmd.handles.filter { h ->
-            library.byHandle(h)?.type?.let { it != ContentType.DOCUMENT && it != ContentType.OTHER } == true
+        val keep = cmd.handles.indices.filter { i ->
+            library.byHandle(cmd.handles[i])?.type?.let { it != ContentType.DOCUMENT && it != ContentType.OTHER } == true
         }
-        if (playable.isEmpty()) return
-        show = Show(playable, cmd.imageSeconds.coerceAtLeast(1) * 1000L, cmd.loop)
-        queue = playable
-        library.byHandle(playable[cmd.start.coerceIn(0, playable.size - 1)])?.let { open(it, 0) }
-        armShow()
+        if (keep.isEmpty()) return
+        val s = Show(keep.map { cmd.handles[it] }, keep.map { cmd.secondsAt(it).coerceAtLeast(1) }, cmd.loop)
+        s.index = keep.indexOfFirst { it >= cmd.start }.takeIf { it >= 0 } ?: 0
+        show = s
+        queue = s.handles
+        showSlide(s, s.index, lastPage = false)
     }
 
     private fun endShow() {
@@ -321,40 +319,62 @@ class PlayerEngine(
         stillPaused = true
     }
 
-    /** Images and PDF pages advance on a timer; media advances when it ends (see listener). */
+    private fun showSlide(s: Show, index: Int, lastPage: Boolean) {
+        s.index = index
+        library.byHandle(s.handles[index])?.let { open(it, if (lastPage && it.type == ContentType.PDF) it.pageCount - 1 else 0) }
+            ?: fail(null, "A slide is missing on the board")
+        preloadShowNext(s)
+        armShow()
+    }
+
+    /** Images and PDF pages advance on their own timer; media advances when it ends (see listener). */
     private fun armShow() {
         showTimer?.cancel()
         stillPaused = false
         val s = show ?: return
         if (showingStill()) {
+            val ms = s.seconds.getOrElse(s.index) { 8 } * 1000L
             showTimer = scope.launch(Dispatchers.Main) {
-                delay(s.stillMs)
+                delay(ms)
                 advance()
             }
         }
     }
 
-    private fun advance() {
+    /** Moves within the slideshow: PDF pages first, then slides; wraps when looping. */
+    private fun showStep(dir: Int, auto: Boolean) {
         val s = show ?: return
         val cur = current
-        if (cur?.type == ContentType.PDF && (cur.pageCount == 0 || page + 1 < cur.pageCount)) {
-            showPage(cur, page + 1)
-        } else {
-            val i = s.handles.indexOf(cur?.handle ?: -1)
-            val next = when {
-                i + 1 < s.handles.size -> s.handles[i + 1]
-                s.loop -> s.handles.first()
-                else -> null
+        if (cur?.type == ContentType.PDF) {
+            val target = page + dir
+            if (target >= 0 && (cur.pageCount == 0 || target < cur.pageCount)) {
+                showPage(cur, target)
+                armShow()
+                return
             }
-            if (next == null) {
+        }
+        val next = s.index + dir
+        val index = when {
+            next in s.handles.indices -> next
+            s.loop -> if (dir > 0) 0 else s.handles.lastIndex
+            auto -> {
                 endShow() // finished: stay on the last slide
                 publish()
                 return
             }
-            library.byHandle(next)?.let { open(it, 0) }
+            else -> return
         }
-        armShow()
+        showSlide(s, index, lastPage = dir < 0)
+    }
+
+    private fun advance() {
+        showStep(+1, auto = true)
         publish()
+    }
+
+    private fun preloadShowNext(s: Show) {
+        val next = (s.index + 1).let { if (it > s.handles.lastIndex) (if (s.loop) 0 else return) else it }
+        preloadHandle(s.handles[next])
     }
 
     private fun step(dir: Int) {
@@ -381,7 +401,11 @@ class PlayerEngine(
     }
 
     private fun preloadNext() {
-        val handle = neighbour(+1) ?: return
+        show?.let { return preloadShowNext(it) }
+        preloadHandle(neighbour(+1) ?: return)
+    }
+
+    private fun preloadHandle(handle: Int) {
         if (handle == current?.handle) return
         val item = library.byHandle(handle) ?: return
         val file = library.fileOf(item.id) ?: return

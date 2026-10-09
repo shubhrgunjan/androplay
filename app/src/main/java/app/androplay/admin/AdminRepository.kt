@@ -13,6 +13,8 @@ import app.androplay.core.Content
 import app.androplay.core.RedisSubscriber
 import app.androplay.core.S3
 import app.androplay.core.Slideshow
+import app.androplay.core.flatten
+import app.androplay.core.slideshowCommand
 import app.androplay.core.unb64
 import app.androplay.protocol.Command
 import app.androplay.protocol.ContentType
@@ -201,10 +203,23 @@ class AdminRepository(private val app: AndroPlayApp) {
     suspend fun saveShow(show: Slideshow): Boolean = withContext(Dispatchers.IO) {
         val b = backend ?: return@withContext false
         runCatching {
-            val saved = show.copy(updatedAt = System.currentTimeMillis())
+            val isNew = shows.value.none { it.id == show.id }
+            val position = if (isNew) (shows.value.maxOfOrNull { it.position } ?: -1) + 1 else show.position
+            val saved = show.copy(updatedAt = System.currentTimeMillis(), position = position)
             b.putSlideshow(saved)
-            shows.value = listOf(saved) + shows.value.filterNot { it.id == saved.id }
+            shows.value = (shows.value.filterNot { it.id == saved.id } + saved).sortedBy { it.position }
         }.isSuccess
+    }
+
+    /** Persists a new slideshow order (after drag and drop). Updates the UI immediately. */
+    suspend fun reorderShows(ordered: List<Slideshow>): Boolean {
+        val updated = ordered.mapIndexed { i, s -> s.copy(position = i) }
+        shows.value = updated
+        val changed = updated.filter { u -> ordered.firstOrNull { it.id == u.id }?.position != u.position }
+        return withContext(Dispatchers.IO) {
+            val b = backend ?: return@withContext false
+            runCatching { b.putSlideshows(changed) }.isSuccess
+        }
     }
 
     suspend fun deleteShow(id: String): Boolean = withContext(Dispatchers.IO) {
@@ -215,20 +230,27 @@ class AdminRepository(private val app: AndroPlayApp) {
         }.isSuccess
     }
 
-    /** Items of [show] that the selected board can play right now, in order. */
-    fun playableHandles(show: Slideshow): List<Int> {
-        val byId = entries.value.associateBy { it.id }
-        return show.items.mapNotNull { id ->
-            byId[id]?.takeIf { it.status == EntryStatus.READY }?.content?.handle
-        }
+    private fun readyHandle(contentId: String): Int? =
+        entries.value.firstOrNull { it.id == contentId && it.status == EntryStatus.READY }?.content?.handle
+
+    /** Slides of [show] (nested slideshows expanded) that the selected board can play now. */
+    fun playableCount(show: Slideshow): Int =
+        show.flatten(shows.value.associateBy { it.id }).count { readyHandle(it.contentId) != null }
+
+    /** Starts [show] on the board. Returns how many slides will play (0 = nothing ready). */
+    suspend fun playShow(show: Slideshow): Int {
+        val cmd = slideshowCommand(show.flatten(shows.value.associateBy { it.id }), show.loop, ::readyHandle) ?: return 0
+        send(cmd)
+        return cmd.handles.size
     }
 
-    /** Starts [show] on the board. Returns how many items will play (0 = nothing ready). */
-    suspend fun playShow(show: Slideshow, startAt: Int = 0): Int {
-        val handles = playableHandles(show)
-        if (handles.isEmpty()) return 0
-        send(Command.Slideshow(handles, show.imageSeconds, show.loop, startAt.coerceIn(0, handles.size - 1)))
-        return handles.size
+    /** Plays every slideshow back to back, in list order. */
+    suspend fun playAll(loop: Boolean): Int {
+        val all = shows.value.associateBy { it.id }
+        val slides = shows.value.flatMap { it.flatten(all) }
+        val cmd = slideshowCommand(slides, loop, ::readyHandle) ?: return 0
+        send(cmd)
+        return cmd.handles.size
     }
 
     suspend fun delete(c: Content) = withContext(Dispatchers.IO) {
