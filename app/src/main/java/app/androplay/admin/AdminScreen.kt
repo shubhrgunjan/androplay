@@ -186,6 +186,7 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSettings: (
         bottomBar = { RemoteBar(state, entries, send) },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
+            UpdateBanner(repo)
             TabRow(selectedTabIndex = tab) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Library") })
                 Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Slideshows${if (shows.isNotEmpty()) " ${shows.size}" else ""}") })

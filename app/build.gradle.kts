@@ -21,8 +21,8 @@ android {
         applicationId = "app.androplay"
         minSdk = 28
         targetSdk = 34
-        versionCode = 7
-        versionName = "0.5.0"
+        versionCode = 8
+        versionName = "0.6.0"
 
         buildConfigField("String", "DEFAULT_REDIS_URL", localString("androplay.redisUrl"))
         buildConfigField("String", "DEFAULT_S3_ENDPOINT", localString("androplay.s3Endpoint"))

@@ -15,6 +15,7 @@ import app.androplay.protocol.Fingerprint
 import app.androplay.protocol.MimeTypes
 import app.androplay.protocol.Origin
 import app.androplay.protocol.PlaybackState
+import app.androplay.protocol.Status
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -80,6 +81,12 @@ class BoardSync(
         scope.launch { eventLoop() }
         scope.launch { downloadLoop() }
         scope.launch { publishState() }
+        scope.launch {
+            while (isActive) {
+                autoUpdate()
+                delay(30 * 60_000L)
+            }
+        }
     }
 
     fun stop() {
@@ -154,6 +161,7 @@ class BoardSync(
     private fun handleEvent(e: Backend.Event) {
         when (e.op) {
             "show" -> refreshShows()
+            "release" -> scope.launch { autoUpdate() }
             "add", "update" -> {
                 val c = backend.content(e.contentId)
                 trackIncoming(e.contentId, c)
@@ -192,12 +200,24 @@ class BoardSync(
         status.update { it.copy(incoming = list) }
     }
 
-    /** Brings local storage and the backend into agreement. Safe to run any time. */
-    @Synchronized
+    /**
+     * Boards update themselves, but never mid-presentation: wait until nothing is on screen.
+     * Needs "Install unknown apps" for AndroPlay (setup banner / adb appops).
+     */
+    private suspend fun autoUpdate() {
+        val release = app.updater.check() ?: return
+        if (!app.updater.canInstall()) return
+        while (scope.isActive && app.engine.state.value.status != Status.IDLE) delay(60_000)
+        Log.i(TAG, "Installing update ${release.versionName}")
+        app.updater.install(release)
+    }
+
     private fun refreshShows() {
         runCatching { app.boardShows.value = backend.slideshows() }
     }
 
+    /** Brings local storage and the backend into agreement. Safe to run any time. */
+    @Synchronized
     private fun reconcile() {
         refreshShows()
         val contents = backend.allContent().associateBy { it.id }.toMutableMap()

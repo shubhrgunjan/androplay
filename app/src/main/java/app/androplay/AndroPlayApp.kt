@@ -18,6 +18,7 @@ import app.androplay.core.S3
 import app.androplay.core.Role
 import app.androplay.core.Settings
 import app.androplay.core.Slideshow
+import app.androplay.core.Updater
 import app.androplay.protocol.Command
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +54,9 @@ class AndroPlayApp : Application() {
 
     // Admin role
     val admin by lazy { AdminRepository(this) }
+
+    // Both roles
+    val updater by lazy { Updater(this) }
 
     override fun onCreate() {
         super.onCreate()

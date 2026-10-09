@@ -194,6 +194,21 @@ class Backend(val config: BackendConfig) : Closeable {
         redis.pipeline(listOf(arrayOf("DEL", kItem(id)), arrayOf("ZREM", kContent, id), event("remove", id)))
     }
 
+    // --- App updates ------------------------------------------------------------------------
+
+    /** Latest published build (written by scripts/publish_update.py). */
+    fun latestRelease(): ReleaseInfo? {
+        val h = (redis.call("HGETALL", "${p}release") as? List<*>)?.toStringMap() ?: return null
+        return ReleaseInfo(
+            versionCode = h["versionCode"]?.toIntOrNull() ?: return null,
+            versionName = h["versionName"].orEmpty(),
+            objectKey = h["objectKey"] ?: return null,
+            sha256 = h["sha256"].orEmpty(),
+            size = h["size"]?.toLongOrNull() ?: 0,
+            notes = h["notes"].orEmpty(),
+        )
+    }
+
     // --- Slideshows --------------------------------------------------------------------------
 
     fun slideshows(): List<Slideshow> =

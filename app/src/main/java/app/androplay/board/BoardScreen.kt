@@ -65,6 +65,7 @@ enum class SetupStep(val title: String, val why: String) {
     BLUETOOTH("Allow Bluetooth", "so phones in the room can control the board"),
     STORAGE("Allow file access", "to store synced content and play files already on the board"),
     OVERLAY("Allow display over other apps", "so remote commands can bring the player to the front"),
+    INSTALL("Allow app updates", "so the board can update itself when idle"),
 }
 
 @Composable

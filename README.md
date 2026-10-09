@@ -74,6 +74,7 @@ adb shell pm grant $PKG android.permission.BLUETOOTH_CONNECT
 adb shell pm grant $PKG android.permission.POST_NOTIFICATIONS
 adb shell appops set $PKG MANAGE_EXTERNAL_STORAGE allow
 adb shell appops set $PKG SYSTEM_ALERT_WINDOW allow
+adb shell appops set $PKG REQUEST_INSTALL_PACKAGES allow   # in-app updates
 # never sleep / no screen saver while locked or presenting
 adb shell pm grant $PKG android.permission.WRITE_SECURE_SETTINGS
 adb shell appops set $PKG WRITE_SETTINGS allow
@@ -111,6 +112,21 @@ It protects:
 - unlocking a locked board
 
 The account is hardcoded; only a SHA-256 is stored. To change it, set `CREDENTIAL_HASH` in `app/src/main/java/app/androplay/core/AdminAuth.kt` to `sha256("USERNAME:password")` with the username in uppercase, e.g. `printf 'USERNAME:password' | shasum -a 256`.
+
+## Updates (no GitHub needed on devices)
+
+From v0.6.0 the app updates itself. A release is published like this:
+
+```bash
+# 1. bump versionCode / versionName in app/build.gradle.kts
+# 2. build, upload to the bucket, announce via Redis, create the GitHub release:
+scripts/release.sh "What changed"
+```
+
+- **Phones** show an *Update available* banner with an **Update** button.
+- **Boards** update automatically, but only when nothing is on screen, then restart into the player.
+- One-time per device: allow *Install unknown apps* for AndroPlay. The board's setup banner offers it, or use `adb shell appops set app.androplay REQUEST_INSTALL_PACKAGES allow`. Android asks to confirm the first in-app update; on Android 12+ later updates are silent.
+- Builds must be signed with the same key. Releases are built on the lab Mac, so keep `~/.android/debug.keystore` safe (or move to a dedicated release keystore).
 
 ## Presentation safeguards (board)
 

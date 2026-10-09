@@ -167,7 +167,10 @@ class AdminRepository(private val app: AndroPlayApp) {
             }
         }
         if (hasPending()) UploadWorker.enqueue(ctx)
+        io.launch { app.updater.check() }
     }
+
+    val updater get() = app.updater
 
     fun restartBle() {
         val b = selected.value ?: return
@@ -333,6 +336,7 @@ class AdminRepository(private val app: AndroPlayApp) {
                             if (wait > 0) delay(wait)
                         }
                         if (events.any { it.op == "show" }) shows.value = b.slideshows()
+                        if (events.any { it.op == "release" }) io.launch { app.updater.check() }
                         if (events.any { it.op != "show" }) contents.value = b.allContent()
                         lastRefresh = System.currentTimeMillis()
                     }

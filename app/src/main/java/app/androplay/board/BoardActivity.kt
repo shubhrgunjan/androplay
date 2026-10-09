@@ -249,6 +249,7 @@ class BoardActivity : ComponentActivity() {
             if (ble.any { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }) add(SetupStep.BLUETOOTH)
             if (!Environment.isExternalStorageManager()) add(SetupStep.STORAGE)
             if (!Settings.canDrawOverlays(this@BoardActivity)) add(SetupStep.OVERLAY)
+            if (!packageManager.canRequestPackageInstalls()) add(SetupStep.INSTALL)
         }
     }
 
@@ -264,6 +265,7 @@ class BoardActivity : ComponentActivity() {
             )
             SetupStep.STORAGE -> openSettings(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, pkg))
             SetupStep.OVERLAY -> openSettings(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, pkg))
+            SetupStep.INSTALL -> openSettings(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, pkg))
         }
     }
 
