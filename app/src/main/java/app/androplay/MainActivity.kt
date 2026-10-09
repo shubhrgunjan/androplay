@@ -1,16 +1,12 @@
 package app.androplay
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -18,7 +14,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -34,28 +29,21 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import app.androplay.admin.AdminActivity
 import app.androplay.board.BoardActivity
 import app.androplay.board.BoardService
 import app.androplay.core.AdminAuth
-import app.androplay.core.Backend
 import app.androplay.core.BackendConfig
 import app.androplay.core.Role
 import app.androplay.ui.PasswordDialog
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
- * Entry point: routes to the Board or Admin UI, or shows first-run setup (role + backend).
+ * Entry point: routes to the Board or Admin UI, or shows first-run setup (role).
  * Provision headlessly with: adb shell am start -n app.androplay/.MainActivity --es config <setup code> --es role BOARD
  */
 class MainActivity : ComponentActivity() {
@@ -124,20 +112,12 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun SetupScreen(onSave: (Role, String, BackendConfig) -> Unit) {
         val s = app.settings
-        val scope = rememberCoroutineScope()
-        var role by remember { mutableStateOf(s.role) }
         var name by remember { mutableStateOf(s.deviceName) }
-        var cfg by remember { mutableStateOf(s.config) }
-        var code by remember { mutableStateOf("") }
-        var status by remember { mutableStateOf<String?>(null) }
-        var testing by remember { mutableStateOf(false) }
-        // Builds ship with the lab backend, so the only real question is "board or phone?".
-        var showBackend by remember { mutableStateOf(!cfg.isComplete) }
+        val cfg = if (s.config.isComplete) s.config.normalized() else BackendConfig.buildDefault.normalized()
         val detectedBoard = looksLikeBoard()
 
         fun choose(r: Role) {
-            role = r
-            if (cfg.isComplete) onSave(r, name.trim().ifEmpty { s.deviceName }, cfg.normalized()) else showBackend = true
+            onSave(r, name.trim().ifEmpty { s.deviceName }, cfg)
         }
 
         Column(
@@ -172,69 +152,13 @@ class MainActivity : ComponentActivity() {
                     Text(if (detectedBoard) "Use this device as an admin phone instead" else "This device is a board")
                 }
 
+                OutlinedTextField(name, { name = it }, label = { Text("Device name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+
                 if (s.role == Role.ADMIN && AdminAuth.isLoggedIn(this@MainActivity)) {
                     OutlinedButton(onClick = ::logOut, modifier = Modifier.fillMaxWidth()) { Text("Log out") }
                 }
-
-                TextButton(onClick = { showBackend = !showBackend }) {
-                    Text(if (showBackend) "Hide backend settings" else "Backend settings")
-                }
-                if (showBackend) {
-                    OutlinedTextField(name, { name = it }, label = { Text("Device name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(code, { code = it }, label = { Text("Setup code (optional)") }, singleLine = true, modifier = Modifier.weight(1f))
-                        OutlinedButton(onClick = {
-                            BackendConfig.fromCode(code)?.let { cfg = it; status = "Setup code applied" } ?: run { status = "Invalid setup code" }
-                        }) { Text("Apply") }
-                    }
-                    Field("Redis URL (rediss://default:password@host:port)", cfg.redisUrl) { cfg = cfg.copy(redisUrl = it) }
-                    Field("Key prefix", cfg.prefix) { cfg = cfg.copy(prefix = it) }
-                    Field("S3 endpoint", cfg.s3Endpoint) { cfg = cfg.copy(s3Endpoint = it) }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Field("Bucket", cfg.bucket, Modifier.weight(1f)) { cfg = cfg.copy(bucket = it) }
-                        Field("Region", cfg.s3Region, Modifier.weight(1f)) { cfg = cfg.copy(s3Region = it) }
-                    }
-                    Field("Access key", cfg.accessKey) { cfg = cfg.copy(accessKey = it) }
-                    Field("Secret key", cfg.secretKey, secret = true) { cfg = cfg.copy(secretKey = it) }
-                    OutlinedButton(onClick = { cfg = BackendConfig.buildDefault; status = "Restored built-in backend" }) {
-                        Text("Use built-in backend")
-                    }
-
-                    status?.let { Text(it, color = MaterialTheme.colorScheme.tertiary) }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            enabled = cfg.isComplete && !testing,
-                            onClick = {
-                                testing = true
-                                status = "Testing…"
-                                scope.launch {
-                                    cfg = cfg.normalized()
-                                    status = withContext(Dispatchers.IO) { test(cfg) }
-                                    testing = false
-                                }
-                            },
-                        ) { Text("Test") }
-                        OutlinedButton(enabled = cfg.isComplete, onClick = {
-                            getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("AndroPlay setup", cfg.toCode()))
-                            Toast.makeText(this@MainActivity, "Setup code copied", Toast.LENGTH_SHORT).show()
-                        }) { Text("Copy code") }
-                        Button(
-                            enabled = role != null && cfg.isComplete && name.isNotBlank(),
-                            onClick = { onSave(role!!, name.trim(), cfg.normalized()) },
-                        ) { Text("Save") }
-                    }
-                }
             }
         }
-    }
-
-    private fun test(cfg: BackendConfig): String {
-        val redis = runCatching { Backend(cfg).use { it.ping() } }.exceptionOrNull()
-        if (redis != null) return "Redis failed: ${redis.message}"
-        val s3 = runCatching {
-            app.newS3For(cfg).putObject(".androplay-check", "ok".encodeToByteArray(), "text/plain")
-        }.exceptionOrNull()
-        return if (s3 != null) "Redis OK · Storage failed: ${s3.message}" else "Redis OK · Storage OK"
     }
 
     /** LG CreateBoard, or any large screen without phone hardware. */
@@ -243,18 +167,5 @@ class MainActivity : ComponentActivity() {
         if (model.contains("TR3D", ignoreCase = true) || model.contains("CreateBoard", ignoreCase = true)) return true
         val large = resources.configuration.smallestScreenWidthDp >= 600
         return large && !packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELEPHONY)
-    }
-
-    @Composable
-    private fun Field(label: String, value: String, modifier: Modifier = Modifier.fillMaxWidth(), secret: Boolean = false, onChange: (String) -> Unit) {
-        OutlinedTextField(
-            value = value,
-            onValueChange = onChange,
-            label = { Text(label) },
-            singleLine = true,
-            visualTransformation = if (secret) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
-            keyboardOptions = KeyboardOptions(keyboardType = if (secret) KeyboardType.Password else KeyboardType.Uri),
-            modifier = modifier,
-        )
     }
 }
