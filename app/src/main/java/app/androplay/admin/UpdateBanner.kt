@@ -119,7 +119,12 @@ fun UpdateBanner(repo: AdminRepository) {
                 }
                 is UpdateState.Failed -> {
                     Spacer(Modifier.width(8.dp))
-                    FilledTonalButton(onClick = { scope.launch { repo.updater.check() } }) { Text("Retry") }
+                    FilledTonalButton(onClick = {
+                        scope.launch {
+                            if (s.release != null) repo.updater.install(s.release)
+                            else repo.updater.check()
+                        }
+                    }) { Text("Retry") }
                 }
                 else -> Unit
             }

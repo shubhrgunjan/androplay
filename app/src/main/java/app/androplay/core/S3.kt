@@ -22,7 +22,24 @@ import javax.crypto.spec.SecretKeySpec
  */
 class S3(config: BackendConfig, private val http: OkHttpClient) {
     private val cfg = config.normalized()
-    class S3Error(val code: Int, val body: String) : IOException("S3 $code: ${body.take(300)}")
+    class S3Error(val code: Int, val body: String) : IOException(friendly(code, body)) {
+        companion object {
+            fun friendly(code: Int, body: String): String {
+                val err = Regex("<Code>([^<]+)</Code>").find(body)?.groupValues?.get(1)
+                val msg = Regex("<Message>([^<]+)</Message>").find(body)?.groupValues?.get(1)
+                    ?.replace("&amp;", "&")
+                    ?.replace("&lt;", "<")
+                    ?.replace("&gt;", ">")
+                val cap = msg?.contains("cap exceeded", ignoreCase = true) == true ||
+                    msg?.contains("bandwidth", ignoreCase = true) == true
+                return when {
+                    cap -> "Backblaze download cap is used up. Install from the lab Mac with adb, or raise the cap in Backblaze → Caps & Alerts."
+                    !msg.isNullOrBlank() -> "Storage $code${err?.let { " $it" } ?: ""}: $msg"
+                    else -> "S3 $code: ${body.take(160)}"
+                }
+            }
+        }
+    }
 
     private val endpoint: HttpUrl = cfg.s3Endpoint.toHttpUrl()
     private val region = cfg.s3Region.ifBlank { "auto" }

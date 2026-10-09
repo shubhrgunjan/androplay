@@ -37,7 +37,7 @@ sealed interface UpdateState {
     data class Installing(val release: ReleaseInfo) : UpdateState
     /** Android is showing its "update this app?" prompt on this device. */
     data class Confirming(val release: ReleaseInfo) : UpdateState
-    data class Failed(val message: String) : UpdateState
+    data class Failed(val message: String, val release: ReleaseInfo? = null) : UpdateState
 }
 
 /**
@@ -78,7 +78,7 @@ class Updater(private val app: AndroPlayApp) {
                 commit(apk)
             } catch (e: Exception) {
                 Log.w(TAG, "Update failed", e)
-                _state.value = UpdateState.Failed(e.message ?: e.javaClass.simpleName)
+                _state.value = UpdateState.Failed(e.message ?: e.javaClass.simpleName, release)
             }
         }
     }
