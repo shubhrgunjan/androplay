@@ -88,6 +88,10 @@ fun UpdateBanner(repo: AdminRepository) {
                         )
                         LinearProgressIndicator(progress = { s.progress }, modifier = Modifier.fillMaxWidth())
                     }
+                    is UpdateState.Confirming -> {
+                        Text("Confirm v${s.release.versionName}", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                        Text("Tap Update in Android's prompt to finish", style = MaterialTheme.typography.labelSmall)
+                    }
                     is UpdateState.Installing -> {
                         Text("Installing v${s.release.versionName}…", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
                         Text("The app will restart", style = MaterialTheme.typography.labelSmall)

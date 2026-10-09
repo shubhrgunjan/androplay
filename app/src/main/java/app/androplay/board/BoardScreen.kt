@@ -162,6 +162,7 @@ fun BoardScreen(
                 Box(Modifier.fillMaxSize().background(Board.Overlay)) { LibraryOverlay(app) }
             }
             IncomingUploadsCard(app, Modifier.align(Alignment.BottomEnd).padding(24.dp))
+            if (display is Display.Idle) UpdateChip(app, Modifier.align(Alignment.BottomStart).padding(24.dp))
             if (setup.isNotEmpty()) SetupBanner(setup, onSetup, Modifier.align(Alignment.BottomCenter))
             LockLayer(app, showUnlockFlow.collectAsState().value, onDismissUnlock)
         }

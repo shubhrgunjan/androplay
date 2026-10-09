@@ -35,6 +35,8 @@ sealed interface UpdateState {
     data class Available(val release: ReleaseInfo) : UpdateState
     data class Downloading(val release: ReleaseInfo, val progress: Float) : UpdateState
     data class Installing(val release: ReleaseInfo) : UpdateState
+    /** Android is showing its "update this app?" prompt on this device. */
+    data class Confirming(val release: ReleaseInfo) : UpdateState
     data class Failed(val message: String) : UpdateState
 }
 
@@ -57,7 +59,7 @@ class Updater(private val app: AndroPlayApp) {
             .onFailure { Log.w(TAG, "Update check failed", it) }
             .getOrNull()
         if (release != null && release.versionCode > BuildConfig.VERSION_CODE) {
-            if (_state.value !is UpdateState.Downloading && _state.value !is UpdateState.Installing) {
+            if (!busy) {
                 _state.value = UpdateState.Available(release)
             }
             release
@@ -79,6 +81,23 @@ class Updater(private val app: AndroPlayApp) {
                 _state.value = UpdateState.Failed(e.message ?: e.javaClass.simpleName)
             }
         }
+    }
+
+    /** Short human-readable status, reported by boards in their heartbeat; null when up to date. */
+    fun statusText(): String? = when (val s = _state.value) {
+        UpdateState.UpToDate -> null
+        is UpdateState.Available -> "Update v${s.release.versionName} available"
+        is UpdateState.Downloading -> "Downloading v${s.release.versionName} ${(s.progress * 100).toInt()}%"
+        is UpdateState.Installing -> "Installing v${s.release.versionName}"
+        is UpdateState.Confirming -> "Tap Update on the board to install v${s.release.versionName}"
+        is UpdateState.Failed -> "Update failed: ${s.message}"
+    }
+
+    val busy: Boolean get() = _state.value is UpdateState.Downloading || _state.value is UpdateState.Installing || _state.value is UpdateState.Confirming
+
+    fun onNeedsConfirmation() {
+        val s = _state.value
+        if (s is UpdateState.Installing) _state.value = UpdateState.Confirming(s.release)
     }
 
     fun onInstallFailed(message: String?) {
@@ -164,6 +183,7 @@ class UpdateReceiver : BroadcastReceiver() {
         val app = context.applicationContext as AndroPlayApp
         when (val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                app.updater.onNeedsConfirmation()
                 IntentCompat.getParcelableExtra(intent, Intent.EXTRA_INTENT, Intent::class.java)?.let {
                     runCatching { context.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
                         .onFailure { app.updater.onInstallFailed("Open AndroPlay to confirm the update") }

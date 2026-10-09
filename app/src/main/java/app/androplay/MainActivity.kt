@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.widthIn
@@ -75,10 +76,8 @@ class MainActivity : ComponentActivity() {
             route(role)
             return
         }
-        // Settings and role changes need the admin password; only a fresh device (no role yet) skips it.
-        // A logged-in admin phone already proved who it is; everyone else (boards included) must log in.
-        val needsAuth = (intent.getBooleanExtra(EXTRA_EDIT, false) || role != null) &&
-            !(role == Role.ADMIN && AdminAuth.isLoggedIn(this))
+        // Boards never see a login. Only an admin phone that isn't logged in must log in to change settings.
+        val needsAuth = role == Role.ADMIN && !AdminAuth.isLoggedIn(this)
         enableEdgeToEdge()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
@@ -134,7 +133,7 @@ class MainActivity : ComponentActivity() {
         var testing by remember { mutableStateOf(false) }
         // Builds ship with the lab backend, so the only real question is "board or phone?".
         var showBackend by remember { mutableStateOf(!cfg.isComplete) }
-        val bigScreen = resources.configuration.smallestScreenWidthDp >= 600
+        val detectedBoard = looksLikeBoard()
 
         fun choose(r: Role) {
             role = r
@@ -147,19 +146,31 @@ class MainActivity : ComponentActivity() {
         ) {
             Column(Modifier.widthIn(max = 640.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Text("AndroPlay", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-                Text("What is this device?", style = MaterialTheme.typography.titleLarge)
-                RoleCard(
-                    title = "Phone / Admin",
-                    text = "Upload videos, images and PDFs, and control the board.",
-                    badge = if (!bigScreen) "Recommended for this device" else null,
-                    selected = role == Role.ADMIN,
-                ) { choose(Role.ADMIN) }
-                RoleCard(
-                    title = "Board / Player",
-                    text = "Full-screen player for the CreateBoard. Syncs and plays content.",
-                    badge = if (bigScreen) "Recommended for this device" else null,
-                    selected = role == Role.BOARD,
-                ) { choose(Role.BOARD) }
+                // One obvious choice, detected from the hardware; the other role stays one tap away.
+                val primary = if (detectedBoard) Role.BOARD else Role.ADMIN
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                ) {
+                    Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            if (detectedBoard) "This device is a board" else "This device is an admin phone",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            if (detectedBoard) "Detected ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}. It will play content full-screen and sync automatically."
+                            else "Upload videos, images and PDFs, and control the board.",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Button(onClick = { choose(primary) }, modifier = Modifier.fillMaxWidth().height(56.dp)) {
+                            Text(if (detectedBoard) "Continue as board" else "Continue as admin", style = MaterialTheme.typography.titleMedium)
+                        }
+                    }
+                }
+                TextButton(onClick = { choose(if (detectedBoard) Role.ADMIN else Role.BOARD) }, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (detectedBoard) "Use this device as an admin phone instead" else "This device is a board")
+                }
 
                 if (s.role == Role.ADMIN && AdminAuth.isLoggedIn(this@MainActivity)) {
                     OutlinedButton(onClick = ::logOut, modifier = Modifier.fillMaxWidth()) { Text("Log out") }
@@ -226,21 +237,12 @@ class MainActivity : ComponentActivity() {
         return if (s3 != null) "Redis OK · Storage failed: ${s3.message}" else "Redis OK · Storage OK"
     }
 
-    @Composable
-    private fun RoleCard(title: String, text: String, badge: String?, selected: Boolean, onClick: () -> Unit) {
-        Card(
-            onClick = onClick,
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-            ),
-        ) {
-            Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                badge?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) }
-                Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-                Text(text, style = MaterialTheme.typography.bodyLarge)
-            }
-        }
+    /** LG CreateBoard, or any large screen without phone hardware. */
+    private fun looksLikeBoard(): Boolean {
+        val model = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}"
+        if (model.contains("TR3D", ignoreCase = true) || model.contains("CreateBoard", ignoreCase = true)) return true
+        val large = resources.configuration.smallestScreenWidthDp >= 600
+        return large && !packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELEPHONY)
     }
 
     @Composable

@@ -80,10 +80,12 @@ data class BoardInfo(
     val bleToken: String = "",
     val lastSeen: Long = 0,
     val online: Boolean = false,
+    /** Board's in-app update status ("Downloading v0.8.0 40%", "Update failed: …"); empty when up to date. */
+    val update: String = "",
 ) {
     fun toHash(): Array<String> = arrayOf(
         "id", id, "name", name, "model", model, "ip", ip, "freeBytes", freeBytes.toString(),
-        "appVersion", appVersion, "bleToken", bleToken, "lastSeen", lastSeen.toString(),
+        "appVersion", appVersion, "bleToken", bleToken, "lastSeen", lastSeen.toString(), "update", update,
     )
 
     companion object {
@@ -97,6 +99,7 @@ data class BoardInfo(
             bleToken = h["bleToken"].orEmpty(),
             lastSeen = h["lastSeen"]?.toLongOrNull() ?: 0,
             online = online,
+            update = h["update"].orEmpty(),
         )
     }
 }

@@ -329,7 +329,8 @@ private fun BoardPill(
         board == null -> "Tap to choose a board"
         online -> "Connected"
         else -> "Offline"
-    } + if (board != null && locked) " · Screen locked" else ""
+    } + (if (board != null && locked) " · Screen locked" else "") +
+        (board?.update?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")
 
     Box {
         Surface(

@@ -84,7 +84,7 @@ class BoardSync(
         scope.launch {
             while (isActive) {
                 autoUpdate()
-                delay(30 * 60_000L)
+                delay(2 * 60_000L) // cheap Redis read; also retries failed updates quickly
             }
         }
     }
@@ -111,6 +111,7 @@ class BoardSync(
                         freeBytes = store.freeBytes(),
                         appVersion = BuildConfig.VERSION_NAME,
                         bleToken = app.settings.bleToken,
+                        update = app.updater.statusText().orEmpty(),
                         lastSeen = System.currentTimeMillis(),
                     ),
                 )
@@ -205,8 +206,12 @@ class BoardSync(
      * Needs "Install unknown apps" for AndroPlay (setup banner / adb appops).
      */
     private suspend fun autoUpdate() {
+        if (app.updater.busy) return
         val release = app.updater.check() ?: return
-        if (!app.updater.canInstall()) return
+        if (!app.updater.canInstall()) {
+            app.updater.onInstallFailed("\"Allow app updates\" is off for AndroPlay (Settings › Apps › Install unknown apps)")
+            return
+        }
         while (scope.isActive && app.engine.state.value.status != Status.IDLE) delay(60_000)
         Log.i(TAG, "Installing update ${release.versionName}")
         app.updater.install(release)
