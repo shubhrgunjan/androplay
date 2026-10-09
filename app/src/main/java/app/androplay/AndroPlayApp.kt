@@ -6,6 +6,7 @@ import app.androplay.admin.AdminRepository
 import app.androplay.board.BleStatus
 import app.androplay.board.BoardActivity
 import app.androplay.board.BoardSync
+import app.androplay.board.LanShareServer
 import app.androplay.board.LocalStore
 import app.androplay.board.PerformanceGuard
 import app.androplay.board.PlayerEngine
@@ -51,6 +52,7 @@ class AndroPlayApp : Application() {
     val perf by lazy { PerformanceGuard(this) }
     val screenKeeper by lazy { ScreenKeeper(this) }
     @Volatile var sync: BoardSync? = null
+    val lan by lazy { LanShareServer(this) }
 
     // Admin role
     val admin by lazy { AdminRepository(this) }

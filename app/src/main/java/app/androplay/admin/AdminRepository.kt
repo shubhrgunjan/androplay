@@ -21,6 +21,7 @@ import app.androplay.protocol.Command
 import app.androplay.protocol.ContentType
 import app.androplay.protocol.Fingerprint
 import app.androplay.protocol.MimeTypes
+import app.androplay.protocol.Net
 import app.androplay.protocol.PlaybackState
 import app.androplay.protocol.ProtocolJson
 import kotlinx.coroutines.CancellationException
@@ -42,6 +43,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import java.io.File
 
 @Serializable
@@ -103,6 +105,8 @@ class AdminRepository(private val app: AndroPlayApp) {
     private var stateSub: RedisSubscriber? = null
 
     val ble = BleLink(ctx, main)
+    val lan = LanBrowser(ctx)
+    val lanProgress = MutableStateFlow(LanSendProgress())
     val connected = MutableStateFlow(false)
     val error = MutableStateFlow<String?>(null)
     val contents = MutableStateFlow<List<Content>>(emptyList())
@@ -146,6 +150,7 @@ class AdminRepository(private val app: AndroPlayApp) {
             ble.stop()
             backend?.close()
             backend = null
+            lan.stop()
             return
         }
         if (loops != null || !app.settings.config.isComplete) return
@@ -311,6 +316,111 @@ class AdminRepository(private val app: AndroPlayApp) {
         AddResult(added, rejected)
     }
 
+    data class LanSendResult(val sent: Int, val rejected: Int, val error: String? = null)
+
+    /** Pushes files straight to the board over the local network. Does not use Redis or S3. */
+    suspend fun sendLan(uris: List<Uri>, host: String, port: Int = Net.PORT): LanSendResult = withContext(Dispatchers.IO) {
+        val token = selected.value?.bleToken?.ifBlank { null }
+            ?: prefs.getString("lanToken", null)
+        if (token.isNullOrBlank()) {
+            return@withContext LanSendResult(0, 0, "Select a board first (needed once, so this phone has the share key).")
+        }
+        val target = host.trim().trimStart('/').substringAfter("://").substringBefore('/')
+        if (target.isBlank()) return@withContext LanSendResult(0, 0, "Enter the board's Wi-Fi address.")
+        prefs.edit().putString("lanHost", target).putInt("lanPort", port).putString("lanToken", token).apply()
+
+        val http = app.http.newBuilder()
+            .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(0, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+
+        var sent = 0
+        var rejected = 0
+        var lastError: String? = null
+        val usable = ArrayList<Upload>()
+        for (uri in uris) {
+            val u = runCatching { describe(uri) }.getOrNull()
+            if (u == null) rejected++ else usable += u
+        }
+        usable.forEachIndexed { i, u ->
+            lanProgress.value = LanSendProgress(true, u.name, 0, u.size, i + 1, usable.size)
+            try {
+                putLan(http, target, port, token, u)
+                sent++
+            } catch (e: Exception) {
+                lastError = e.message ?: e.javaClass.simpleName
+                lanProgress.value = LanSendProgress(message = lastError)
+                return@withContext LanSendResult(sent, rejected, friendlyLanError(e))
+            }
+        }
+        lanProgress.value = LanSendProgress()
+        LanSendResult(sent, rejected, lastError)
+    }
+
+    fun lastLanHost(): String = prefs.getString("lanHost", "")
+        ?: selected.value?.ip.orEmpty().ifBlank { ble.info.value?.host.orEmpty() }
+
+    fun suggestedLanHost(): String {
+        val selectedId = selectedId.value
+        val discovered = lan.boards.value
+        discovered.firstOrNull { it.id == selectedId }?.let { return it.host }
+        selected.value?.ip?.takeIf { it.isNotBlank() }?.let { return it }
+        ble.info.value?.host?.takeIf { it.isNotBlank() }?.let { return it }
+        discovered.firstOrNull()?.let { return it.host }
+        return prefs.getString("lanHost", "").orEmpty()
+    }
+
+    private fun putLan(http: okhttp3.OkHttpClient, host: String, port: Int, token: String, u: Upload) {
+        val encoded = java.net.URLEncoder.encode(u.name, Charsets.UTF_8.name())
+        val url = "http://$host:$port/lan?name=$encoded"
+        val body = object : okhttp3.RequestBody() {
+            override fun contentType() = u.mime.toMediaTypeOrNull()
+            override fun contentLength() = u.size
+            override fun writeTo(sink: okio.BufferedSink) {
+                ctx.openOriginal(Uri.parse(u.uri)).use { pfd ->
+                    java.io.FileInputStream(pfd.fileDescriptor).use { input ->
+                        val buf = ByteArray(256 * 1024)
+                        var done = 0L
+                        var last = 0L
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            sink.write(buf, 0, n)
+                            done += n
+                            val now = System.currentTimeMillis()
+                            if (now - last > 200) {
+                                last = now
+                                lanProgress.value = lanProgress.value.copy(sent = done, total = u.size)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        val req = okhttp3.Request.Builder()
+            .url(url)
+            .header(Net.TOKEN_HEADER, token)
+            .put(body)
+            .build()
+        http.newCall(req).execute().use { r ->
+            if (!r.isSuccessful) {
+                val err = r.body?.string().orEmpty().ifBlank { "HTTP ${r.code}" }
+                throw java.io.IOException(err)
+            }
+        }
+    }
+
+    private fun friendlyLanError(e: Exception): String {
+        val m = (e.message ?: "").lowercase()
+        return when {
+            e is java.net.ConnectException || e is java.net.SocketTimeoutException || "failed to connect" in m || "timeout" in m ->
+                "Can't reach the board on this Wi-Fi. Join the same network or turn on the phone's hotspot and connect the board to it. The board shows its address on the home screen."
+            "unauthorized" in m -> "This phone doesn't have the board's share key. Open the app while the cloud is up once, or pick the board again."
+            else -> e.message ?: "Send failed"
+        }
+    }
+
     suspend fun retry(id: String) {
         update(id) { it.copy(state = UploadState.QUEUED, error = null) }
         UploadWorker.enqueue(ctx)
@@ -347,6 +457,12 @@ class AdminRepository(private val app: AndroPlayApp) {
                 boards.value = list
                 if (selectedId.value == null || list.none { it.id == selectedId.value }) {
                     list.firstOrNull { it.online }?.let { select(it.id) }
+                }
+                list.firstOrNull { it.id == selectedId.value }?.let { b ->
+                    val edit = prefs.edit()
+                    if (b.bleToken.isNotBlank()) edit.putString("lanToken", b.bleToken)
+                    if (b.ip.isNotBlank()) edit.putString("lanHost", b.ip)
+                    edit.apply()
                 }
                 selectedId.value?.let { boardSync.value = b.syncState(it) }
                 connected.value = true

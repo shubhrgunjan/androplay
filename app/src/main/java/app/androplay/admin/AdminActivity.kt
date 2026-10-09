@@ -36,6 +36,12 @@ class AdminActivity : ComponentActivity() {
         if (uris.isNotEmpty()) add(uris)
     }
 
+    private var lanHost: String? = null
+    private val lanPicker = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        val host = lanHost
+        if (uris.isNotEmpty() && !host.isNullOrBlank()) sendLan(uris, host)
+    }
+
     /** MIME types we accept: images and videos only. */
     private val acceptedMimes = arrayOf("image/*", "video/*")
 
@@ -52,6 +58,10 @@ class AdminActivity : ComponentActivity() {
                 AdminScreen(
                     repo = app.admin,
                     onAdd = { picker.launch(acceptedMimes) },
+                    onSendLan = { host ->
+                        lanHost = host
+                        lanPicker.launch(acceptedMimes)
+                    },
                     onSettings = { startActivity(Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_EDIT, true)) },
                 )
             }
@@ -126,6 +136,21 @@ class AdminActivity : ComponentActivity() {
                 else -> "Already in the library"
             }
             Toast.makeText(this@AdminActivity, msg, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun sendLan(uris: List<Uri>, host: String) {
+        lifecycleScope.launch {
+            val result = app.admin.sendLan(uris, host)
+            val msg = when {
+                result.error != null && result.sent == 0 -> result.error
+                result.sent > 0 && result.error != null -> "Sent ${result.sent}, then failed: ${result.error}"
+                result.sent > 0 && result.rejected > 0 -> "Sent ${result.sent} · skipped ${result.rejected}"
+                result.sent > 0 -> "Sent ${result.sent} file${if (result.sent > 1) "s" else ""} to the board"
+                result.rejected > 0 -> "Only videos and images can be sent"
+                else -> "Nothing to send"
+            }
+            Toast.makeText(this@AdminActivity, msg, Toast.LENGTH_LONG).show()
         }
     }
 }

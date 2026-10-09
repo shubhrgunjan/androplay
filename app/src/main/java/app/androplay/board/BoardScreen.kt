@@ -256,6 +256,11 @@ private fun ConnectionPill(app: AndroPlayApp) {
         Box(Modifier.size(10.dp).clip(CircleShape).background(color))
         Spacer(Modifier.width(10.dp))
         Text(label, color = Board.Text, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+        val lan by app.lan.endpoint.collectAsState()
+        if (lan != null) {
+            Spacer(Modifier.width(14.dp))
+            Text("Wi‑Fi $lan", color = Board.TextDim, fontSize = 16.sp, maxLines = 1)
+        }
     }
 }
 

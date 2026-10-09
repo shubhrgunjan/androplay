@@ -69,6 +69,7 @@ import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -101,6 +102,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -150,15 +152,15 @@ import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyGridState
 
 @Composable
-fun AdminScreen(repo: AdminRepository, onAdd: () -> Unit, onSettings: () -> Unit) {
+fun AdminScreen(repo: AdminRepository, onAdd: () -> Unit, onSendLan: (host: String) -> Unit, onSettings: () -> Unit) {
     AndroPlayTheme {
-        AdminContent(repo, onAdd, onSettings)
+        AdminContent(repo, onAdd, onSendLan, onSettings)
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSettings: () -> Unit) {
+private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSendLan: (host: String) -> Unit, onSettings: () -> Unit) {
     val scope = rememberCoroutineScope()
     val entries by repo.entries.collectAsState()
     val boards by repo.boards.collectAsState()
@@ -175,7 +177,9 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSettings: (
     var lastQueue by remember { mutableStateOf<List<Int>>(emptyList()) }
     var tab by remember { mutableIntStateOf(0) } // 0 = Library, 1 = Slideshows
     var editing by remember { mutableStateOf<Slideshow?>(null) }
+    var lanOpen by remember { mutableStateOf(false) }
     val gridState = rememberLazyGridState()
+    val lanProgress by repo.lanProgress.collectAsState()
 
     val send: (Command) -> Unit = { cmd -> scope.launch { repo.send(cmd) } }
 
@@ -245,6 +249,7 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSettings: (
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             UpdateBanner(repo)
+            AnimatedVisibility(lanProgress.active || lanProgress.message != null) { LanSendBanner(lanProgress) }
             SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
                 SegmentedButton(
                     selected = tab == 0,
@@ -279,12 +284,24 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSettings: (
                     uploadSummary = uploadSummary,
                     gridState = gridState,
                     onAdd = onAdd,
+                    onSendLan = { lanOpen = true },
                     onPlay = ::play,
                     onDelete = { confirmDelete = it },
                     onRename = { renaming = it },
                 )
             }
         }
+    }
+
+    if (lanOpen) {
+        LanSendDialog(
+            repo = repo,
+            onDismiss = { lanOpen = false },
+            onPick = { host ->
+                lanOpen = false
+                onSendLan(host)
+            },
+        )
     }
 
     editing?.let { show -> SlideshowEditor(repo, entries, show, onDismiss = { editing = null }) }
@@ -483,6 +500,7 @@ private fun LibraryPane(
     uploadSummary: UploadSummary,
     gridState: LazyGridState,
     onAdd: () -> Unit,
+    onSendLan: () -> Unit,
     onPlay: (Entry, List<Entry>) -> Unit,
     onDelete: (Entry) -> Unit,
     onRename: (Entry) -> Unit,
@@ -548,6 +566,7 @@ private fun LibraryPane(
                     )
                 }
             }
+            LanSendButton(onSendLan, Modifier.padding(horizontal = 16.dp, vertical = 2.dp))
         }
         AnimatedVisibility(uploadSummary.active > 0) { UploadBanner(uploadSummary) }
 
@@ -555,10 +574,11 @@ private fun LibraryPane(
             order.isEmpty() -> EmptyState(
                 icon = Icons.Default.VideoLibrary,
                 title = "Your library is empty",
-                text = "Add videos and images. They sync to every board automatically.",
+                text = "Add videos and images. They sync to every board automatically. If the cloud is down, send them on this Wi‑Fi instead.",
                 action = "Add content",
                 actionIcon = Icons.Default.Add,
                 onAction = onAdd,
+                extra = { LanSendButton(onSendLan) },
             )
             visible.isEmpty() -> EmptyState(
                 icon = Icons.Default.SearchOff,
@@ -851,6 +871,7 @@ private fun EmptyState(
     action: String,
     actionIcon: ImageVector,
     onAction: () -> Unit,
+    extra: @Composable () -> Unit = {},
 ) {
     Column(
         Modifier.fillMaxSize().padding(32.dp),
@@ -884,6 +905,7 @@ private fun EmptyState(
                 Text(action)
             }
         }
+        extra()
     }
 }
 
@@ -1201,6 +1223,78 @@ private fun CountBadge(n: Int) {
     Surface(color = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary, shape = CircleShape) {
         Text("$n", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp))
     }
+}
+
+@Composable
+private fun LanSendButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    TextButton(onClick = onClick, modifier = modifier) {
+        Icon(Icons.Default.Wifi, null, Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("Send on this Wi‑Fi")
+    }
+}
+
+@Composable
+private fun LanSendBanner(progress: LanSendProgress) {
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        tonalElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                progress.message ?: "Sending ${progress.name} (${progress.index}/${progress.count}) on Wi‑Fi",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            if (progress.active) {
+                LinearProgressIndicator(progress = { progress.fraction }, modifier = Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
+@Composable
+private fun LanSendDialog(repo: AdminRepository, onDismiss: () -> Unit, onPick: (String) -> Unit) {
+    val discovered by repo.lan.boards.collectAsState()
+    var host by remember { mutableStateOf(repo.suggestedLanHost()) }
+    DisposableEffect(Unit) {
+        repo.lan.start()
+        onDispose { repo.lan.stop() }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.Wifi, null) },
+        title = { Text("Send on this Wi‑Fi") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "Skips the cloud. Phone and board must be on the same Wi‑Fi, or connect the board to this phone's hotspot. The board shows its address on the home screen.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = host,
+                    onValueChange = { host = it },
+                    label = { Text("Board address") },
+                    placeholder = { Text("192.168.1.20") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (discovered.isNotEmpty()) {
+                    Text("Found on this network", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    discovered.forEach { b ->
+                        TextButton(onClick = { host = b.host }) { Text("${b.name} · ${b.host}") }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onPick(host.trim()) }, enabled = host.isNotBlank()) { Text("Pick files") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable

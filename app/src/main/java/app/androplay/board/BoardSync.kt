@@ -12,6 +12,7 @@ import app.androplay.core.unb64
 import app.androplay.protocol.Command
 import app.androplay.protocol.ContentType
 import app.androplay.protocol.Fingerprint
+import app.androplay.protocol.Item
 import app.androplay.protocol.MimeTypes
 import app.androplay.protocol.Origin
 import app.androplay.protocol.PlaybackState
@@ -99,6 +100,35 @@ class BoardSync(
         scope.launch { runCatching { reconcile() } }
     }
 
+    /** Handle for a file that arrived over LAN / USB when Redis may be down. */
+    fun newLocalHandle(): Int = runCatching { backend.newHandle() }.getOrElse { LanShareServer.handleFor(System.nanoTime().toString()) }
+
+    /** Best-effort: publish a locally received file so other admins can play it if Redis is up. */
+    fun announceLocal(item: Item) {
+        scope.launch {
+            runCatching {
+                backend.putContent(
+                    Content(
+                        id = item.id,
+                        handle = item.handle,
+                        name = item.name,
+                        type = item.type,
+                        mime = item.mime,
+                        size = item.size,
+                        ready = true,
+                        origin = Origin.BOARD,
+                        onlyOn = me,
+                        addedBy = app.settings.deviceName,
+                        addedAt = item.addedAt,
+                        durationMs = item.durationMs,
+                        pageCount = item.pageCount,
+                    ),
+                )
+                backend.addHave(me, item.id)
+            }
+        }
+    }
+
     private suspend fun heartbeatLoop() {
         while (scope.isActive) {
             try {
@@ -116,6 +146,7 @@ class BoardSync(
                     ),
                 )
                 status.value = status.value.copy(connected = true, error = null)
+                app.lan.refreshEndpoint()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

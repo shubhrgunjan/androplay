@@ -20,6 +20,7 @@ import android.os.ParcelUuid
 import app.androplay.AndroPlayApp
 import app.androplay.protocol.Ble
 import app.androplay.protocol.DeviceInfo
+import app.androplay.protocol.Net
 import app.androplay.protocol.toHex
 import app.androplay.protocol.Command
 import app.androplay.protocol.PlaybackState
@@ -163,7 +164,7 @@ class BleServer(private val ctx: Context, private val app: AndroPlayApp) {
                 Ble.STATE -> app.engine.state.value.encode()
                 // Long reads arrive in several requests; serve them from one consistent snapshot.
                 Ble.INFO -> if (offset == 0) {
-                    ProtocolJson.encodeToString(DeviceInfo(app.settings.deviceId, app.settings.deviceName, NetUtil.localIp(ctx) ?: "", 0)).encodeToByteArray().also { infoCache[device.address] = it }
+                    ProtocolJson.encodeToString(DeviceInfo(app.settings.deviceId, app.settings.deviceName, NetUtil.localIp(ctx) ?: "", Net.PORT)).encodeToByteArray().also { infoCache[device.address] = it }
                 } else {
                     infoCache[device.address]
                 }

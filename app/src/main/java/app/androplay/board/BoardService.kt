@@ -47,6 +47,7 @@ class BoardService : Service() {
         app.screenKeeper.start()
         startSync()
         restartBle()
+        app.lan.start()
         wifiLock = getSystemService(WifiManager::class.java)
             ?.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "androplay")
             ?.apply {
@@ -70,6 +71,7 @@ class BoardService : Service() {
         unregisterReceiver(bluetoothReceiver)
         sync?.stop()
         app.sync = null
+        app.lan.stop()
         ble?.stop()
         wifiLock?.release()
         super.onDestroy()
