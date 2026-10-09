@@ -277,11 +277,12 @@ class BoardSync(
     }
 
     private fun registerLocal(file: File, contents: MutableMap<String, Content>) {
+        val mime = MimeTypes.of(file.name)
+        val type = ContentType.of(file.name, mime)
+        if (type != ContentType.IMAGE && type != ContentType.VIDEO) return
         val id = Fingerprint.of(file)
         val existing = contents[id]
         val content = existing ?: run {
-            val mime = MimeTypes.of(file.name)
-            val type = ContentType.of(file.name, mime)
             val (duration, pages) = store.probe(file, type)
             val thumb = uploadThumb(id, file, type)
             Content(

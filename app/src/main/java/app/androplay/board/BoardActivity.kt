@@ -36,6 +36,7 @@ import androidx.media3.ui.PlayerView
 import app.androplay.AndroPlayApp
 import app.androplay.MainActivity
 import app.androplay.protocol.Command
+import app.androplay.protocol.ContentType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -71,6 +72,9 @@ class BoardActivity : ComponentActivity() {
     private val importLauncher = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) import(uris)
     }
+
+    /** MIME types we accept: images and videos only. */
+    private val acceptedMimes = arrayOf("image/*", "video/*")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -109,7 +113,7 @@ class BoardActivity : ComponentActivity() {
                 onSetup = ::fixSetup,
                 showUnlockFlow = showUnlock,
                 onDismissUnlock = { showUnlock.value = false },
-                onImport = { importLauncher.launch(arrayOf("*/*")) },
+                onImport = { importLauncher.launch(acceptedMimes) },
                 onSettings = {
                     startActivity(Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_EDIT, true))
                 },
@@ -278,20 +282,34 @@ class BoardActivity : ComponentActivity() {
     /** Copies files picked on the board (USB stick, Drive…) into AndroPlay; sync registers them. */
     private fun import(uris: List<Uri>) {
         lifecycleScope.launch {
-            val count = withContext(Dispatchers.IO) {
-                uris.count { uri ->
-                    runCatching {
-                        val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-                            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "import"
+            val (count, skipped) = withContext(Dispatchers.IO) {
+                var imported = 0
+                var rejected = 0
+                for (uri in uris) {
+                    val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                        ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "import"
+                    val mime = contentResolver.getType(uri)
+                    if (ContentType.of(name, mime) !in setOf(ContentType.IMAGE, ContentType.VIDEO)) {
+                        rejected++
+                        continue
+                    }
+                    val ok = runCatching {
                         val dest = app.store.destinationFor(name)
                         contentResolver.openInputStream(uri)!!.use { input ->
                             dest.outputStream().use { input.copyTo(it, 256 * 1024) }
                         }
                     }.isSuccess
+                    if (ok) imported++
                 }
+                imported to rejected
             }
             app.sync?.requestRescan()
-            Toast.makeText(this@BoardActivity, "Imported $count of ${uris.size}", Toast.LENGTH_SHORT).show()
+            val msg = when {
+                skipped > 0 && count == 0 -> "Only videos and images can be imported"
+                skipped > 0 -> "Imported $count · skipped $skipped (videos and images only)"
+                else -> "Imported $count of ${uris.size}"
+            }
+            Toast.makeText(this@BoardActivity, msg, Toast.LENGTH_SHORT).show()
         }
     }
 }

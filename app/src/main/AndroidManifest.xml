@@ -93,12 +93,18 @@
             android:exported="true"
             android:launchMode="singleTop"
             android:windowSoftInputMode="adjustResize">
-            <!-- "Share → AndroPlay" from Gallery / Files / Drive -->
+            <!-- "Share → AndroPlay" from Gallery / Files / Drive — videos and images only -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="*/*" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="video/*" />
             </intent-filter>
         </activity>
 

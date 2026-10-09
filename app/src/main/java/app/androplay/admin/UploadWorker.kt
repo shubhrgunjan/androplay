@@ -56,6 +56,10 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
         try {
             while (true) {
                 val u = repo.nextPending() ?: break
+                if (u.type != ContentType.IMAGE && u.type != ContentType.VIDEO) {
+                    repo.update(u.id) { it.copy(state = UploadState.FAILED, error = "Only videos and images can be uploaded") }
+                    continue
+                }
                 try {
                     upload(backend, s3, u)
                 } catch (e: CancellationException) {

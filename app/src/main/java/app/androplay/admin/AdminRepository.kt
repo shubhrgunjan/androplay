@@ -287,11 +287,18 @@ class AdminRepository(private val app: AndroPlayApp) {
         .filter { it.state == UploadState.QUEUED || it.state == UploadState.UPLOADING }
         .minByOrNull { it.addedAt }
 
-    /** Adds files from the picker/share sheet. Returns how many were new. */
-    suspend fun add(uris: List<Uri>): Int = withContext(Dispatchers.IO) {
+    data class AddResult(val added: Int, val rejected: Int)
+
+    /** Adds files from the picker/share sheet. Rejects anything that isn't a video or image. */
+    suspend fun add(uris: List<Uri>): AddResult = withContext(Dispatchers.IO) {
         var added = 0
+        var rejected = 0
         for (uri in uris) {
-            val u = runCatching { describe(uri) }.getOrNull() ?: continue
+            val u = runCatching { describe(uri) }.getOrNull()
+            if (u == null) {
+                rejected++
+                continue
+            }
             val alreadyThere = contents.value.any { it.id == u.id && it.ready }
             val isNew = mutex.withLock {
                 if (u.id in _uploads.value) return@withLock false
@@ -301,7 +308,7 @@ class AdminRepository(private val app: AndroPlayApp) {
             if (isNew) added++
         }
         if (added > 0) UploadWorker.enqueue(ctx)
-        added
+        AddResult(added, rejected)
     }
 
     suspend fun retry(id: String) {
@@ -431,23 +438,25 @@ class AdminRepository(private val app: AndroPlayApp) {
         else -> EntryStatus.UPLOADING to u.uploaded / u.size.coerceAtLeast(1).toFloat()
     }
 
-    private fun describe(source: Uri): Upload {
+    private fun describe(source: Uri): Upload? {
         val cr = ctx.contentResolver
-        val persistent = runCatching { cr.takePersistableUriPermission(source, Intent.FLAG_GRANT_READ_URI_PERMISSION) }.isSuccess ||
-            source.scheme == "file"
         var name = "file"
         cr.query(source, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
             if (c.moveToFirst()) c.getString(0)?.let { name = it }
         }
+        val mime = cr.getType(source)?.takeUnless { it == MimeTypes.BINARY } ?: MimeTypes.of(name)
+        val type = ContentType.of(name, mime)
+        if (type != ContentType.IMAGE && type != ContentType.VIDEO) return null
+        val persistent = runCatching { cr.takePersistableUriPermission(source, Intent.FLAG_GRANT_READ_URI_PERMISSION) }.isSuccess ||
+            source.scheme == "file"
         // Share-sheet grants are temporary; keep a private copy so the upload can finish later.
         val uri = if (persistent) source else stage(source, name)
-        val mime = cr.getType(uri)?.takeUnless { it == MimeTypes.BINARY } ?: MimeTypes.of(name)
         val (size, id) = ctx.openOriginal(uri).let { pfd ->
             val size = pfd.statSize
             require(size > 0) { "Unknown file size" }
             ParcelFileDescriptor.AutoCloseInputStream(pfd).use { size to Fingerprint.of(it.channel, size) }
         }
-        return Upload(id, uri.toString(), name, size, mime, ContentType.of(name, mime), System.currentTimeMillis(), staged = !persistent)
+        return Upload(id, uri.toString(), name, size, mime, type, System.currentTimeMillis(), staged = !persistent)
     }
 
     private fun stage(source: Uri, name: String): Uri {

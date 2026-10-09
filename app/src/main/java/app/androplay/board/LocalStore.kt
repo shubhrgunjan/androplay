@@ -24,8 +24,8 @@ class LocalStore(private val ctx: Context) {
     val incoming: File get() = File(root, ".incoming").apply { mkdirs() }
 
     private val sharedRoots: List<File> = listOf(
-        Environment.DIRECTORY_MOVIES, Environment.DIRECTORY_PICTURES, Environment.DIRECTORY_MUSIC,
-        Environment.DIRECTORY_DOWNLOADS, Environment.DIRECTORY_DOCUMENTS, Environment.DIRECTORY_DCIM,
+        Environment.DIRECTORY_MOVIES, Environment.DIRECTORY_PICTURES,
+        Environment.DIRECTORY_DOWNLOADS, Environment.DIRECTORY_DCIM,
     ).map { Environment.getExternalStoragePublicDirectory(it) }
 
     @Serializable
@@ -142,7 +142,7 @@ class LocalStore(private val ctx: Context) {
         .maxDepth(6)
         .onEnter { it == dir || !it.name.startsWith(".") }
         .filter { it.isFile && !it.name.startsWith(".") }
-        .filter { everything || ContentType.of(it.name) != ContentType.OTHER }
+        .filter { ContentType.of(it.name) != ContentType.OTHER }
 
     private fun reindex() {
         byHandle.clear()

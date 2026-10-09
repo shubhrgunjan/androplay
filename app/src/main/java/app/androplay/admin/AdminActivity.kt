@@ -36,6 +36,9 @@ class AdminActivity : ComponentActivity() {
         if (uris.isNotEmpty()) add(uris)
     }
 
+    /** MIME types we accept: images and videos only. */
+    private val acceptedMimes = arrayOf("image/*", "video/*")
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -48,7 +51,7 @@ class AdminActivity : ComponentActivity() {
             } else {
                 AdminScreen(
                     repo = app.admin,
-                    onAdd = { picker.launch(arrayOf("*/*")) },
+                    onAdd = { picker.launch(acceptedMimes) },
                     onSettings = { startActivity(Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_EDIT, true)) },
                 )
             }
@@ -112,8 +115,16 @@ class AdminActivity : ComponentActivity() {
 
     private fun add(uris: List<Uri>) {
         lifecycleScope.launch {
-            val n = app.admin.add(uris)
-            val msg = if (n == 0) "Already in the library" else "Uploading $n file${if (n > 1) "s" else ""}"
+            val result = app.admin.add(uris)
+            val msg = when {
+                result.added > 0 && result.rejected > 0 ->
+                    "Uploading ${result.added} · skipped ${result.rejected} (videos and images only)"
+                result.added > 0 ->
+                    "Uploading ${result.added} file${if (result.added > 1) "s" else ""}"
+                result.rejected > 0 ->
+                    "Only videos and images can be uploaded"
+                else -> "Already in the library"
+            }
             Toast.makeText(this@AdminActivity, msg, Toast.LENGTH_SHORT).show()
         }
     }
