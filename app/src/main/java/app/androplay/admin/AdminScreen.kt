@@ -715,10 +715,11 @@ private fun LibraryTile(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                 modifier = Modifier.align(Alignment.Center).size(40.dp),
             )
-            val url = e.content?.let(repo::thumbUrl)
-            if (url != null) {
+            val thumbsRev by repo.thumbsRev.collectAsState()
+            val model = remember(e.id, thumbsRev) { e.content?.let(repo::thumbModel) }
+            if (model != null) {
                 AsyncImage(
-                    model = ImageRequest.Builder(ctx).data(url).memoryCacheKey(e.id).diskCacheKey(e.id).crossfade(true).build(),
+                    model = ImageRequest.Builder(ctx).data(model).memoryCacheKey(e.id).diskCacheKey(e.id).crossfade(true).build(),
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
@@ -1044,10 +1045,11 @@ private fun NowPlayingCard(repo: AdminRepository, state: PlaybackState?, entries
                         tint = MaterialTheme.colorScheme.onPrimaryContainer,
                         modifier = Modifier.size(24.dp),
                     )
-                    val url = current?.content?.let(repo::thumbUrl)
-                    if (url != null && current != null) {
+                    val thumbsRev by repo.thumbsRev.collectAsState()
+                    val model = remember(current?.id, thumbsRev) { current?.content?.let(repo::thumbModel) }
+                    if (model != null && current != null) {
                         AsyncImage(
-                            model = ImageRequest.Builder(ctx).data(url).memoryCacheKey(current.id).diskCacheKey(current.id).build(),
+                            model = ImageRequest.Builder(ctx).data(model).memoryCacheKey(current.id).diskCacheKey(current.id).build(),
                             contentDescription = null,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize(),

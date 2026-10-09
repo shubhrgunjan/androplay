@@ -139,6 +139,7 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
             }
         }
         val thumb = runCatching { thumbnail(uri, u.type) }.getOrNull()?.let { jpeg ->
+            app.admin.saveThumb(u.id, jpeg)
             runCatching { s3.putObject("thumbs/${u.id}.jpg", jpeg, "image/jpeg") }.isSuccess
         } ?: false
         backend.markReady(u.id, key, thumb)

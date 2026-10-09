@@ -45,6 +45,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 @Serializable
 enum class UploadState { QUEUED, UPLOADING, DONE, FAILED }
@@ -139,7 +140,96 @@ class AdminRepository(private val app: AndroPlayApp) {
         )
     }.distinctUntilChanged().stateIn(main, SharingStarted.Eagerly, UploadSummary(0, 0, 0))
 
-    fun thumbUrl(c: Content): String? = if (c.hasThumb) runCatching { s3?.presignGet("thumbs/${c.id}.jpg", 6 * 3600) }.getOrNull() else null
+    val thumbsRev = MutableStateFlow(0)
+    private val thumbDir = File(ctx.cacheDir, "thumbs").apply { mkdirs() }
+    @Volatile private var s3ThumbsDead = false
+    private var thumbJob: Job? = null
+
+    fun thumbFile(id: String) = File(thumbDir, "$id.jpg")
+
+    /** Local cache, else S3, else null while a Wi-Fi fetch from the board is in flight. */
+    fun thumbModel(c: Content): Any? {
+        val local = thumbFile(c.id)
+        if (local.exists() && local.length() > 32) return local
+        if (!s3ThumbsDead && c.hasThumb) {
+            return runCatching { s3?.presignGet("thumbs/${c.id}.jpg", 6 * 3600) }.getOrNull()
+        }
+        return null
+    }
+
+    @Deprecated("Use thumbModel", ReplaceWith("thumbModel(c)?.toString()"))
+    fun thumbUrl(c: Content): String? = when (val m = thumbModel(c)) {
+        is File -> m.toURI().toString()
+        is String -> m
+        else -> null
+    }
+
+    fun saveThumb(id: String, bytes: ByteArray) {
+        if (bytes.size < 32) return
+        val dest = thumbFile(id)
+        val tmp = File(thumbDir, "$id.tmp")
+        tmp.writeBytes(bytes)
+        tmp.renameTo(dest)
+        thumbsRev.value++
+    }
+
+    /** Pull any missing thumbs: S3 first, then the board over Wi-Fi when storage refuses. */
+    fun prefetchThumbs(list: List<Entry> = entries.value) {
+        thumbJob?.cancel()
+        thumbJob = io.launch {
+            delay(250)
+            for (e in list) {
+                if (!isActive) return@launch
+                val c = e.content ?: continue
+                if (thumbFile(c.id).exists()) continue
+                if (!s3ThumbsDead && c.hasThumb && pullThumbS3(c.id)) continue
+                pullThumbLan(c.id)
+            }
+        }
+    }
+
+    private fun pullThumbS3(id: String): Boolean {
+        val client = s3 ?: return false
+        return try {
+            client.get("thumbs/$id.jpg").use { r ->
+                val bytes = r.body?.bytes() ?: return false
+                saveThumb(id, bytes)
+                true
+            }
+        } catch (e: S3.S3Error) {
+            if (e.code == 403 || e.code == 401) s3ThumbsDead = true
+            false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun pullThumbLan(id: String): Boolean {
+        val host = suggestedLanHost().ifBlank { return false }
+        val token = selected.value?.bleToken?.ifBlank { null }
+            ?: prefs.getString("lanToken", null)
+            ?: return false
+        val port = prefs.getInt("lanPort", Net.PORT).let { if (it > 0) it else Net.PORT }
+        return try {
+            val http = app.http.newBuilder()
+                .connectTimeout(3, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .build()
+            val req = okhttp3.Request.Builder()
+                .url("http://$host:$port/lan/thumb/$id")
+                .header(Net.TOKEN_HEADER, token)
+                .get()
+                .build()
+            http.newCall(req).execute().use { r ->
+                if (!r.isSuccessful) return false
+                val bytes = r.body?.bytes() ?: return false
+                saveThumb(id, bytes)
+                true
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     fun setActive(active: Boolean) {
         if (!active) {
@@ -165,6 +255,7 @@ class AdminRepository(private val app: AndroPlayApp) {
         loops = io.launch {
             launch { pollLoop(b) }
             launch { eventLoop(b) }
+            launch { entries.collect { prefetchThumbs(it) } }
             launch {
                 selected.map { it?.id to it?.bleToken }.distinctUntilChanged().collect { (id, token) ->
                     watchBoard(b, id)

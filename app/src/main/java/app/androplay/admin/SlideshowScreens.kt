@@ -1168,9 +1168,11 @@ private fun Thumb(
             Modifier.size(22.dp),
             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
         )
-        e?.content?.let(repo::thumbUrl)?.let { url ->
+        val thumbsRev by repo.thumbsRev.collectAsState()
+        val model = remember(e?.id, thumbsRev) { e?.content?.let(repo::thumbModel) }
+        if (model != null && e != null) {
             AsyncImage(
-                model = ImageRequest.Builder(ctx).data(url).memoryCacheKey(e.id).diskCacheKey(e.id).crossfade(true).build(),
+                model = ImageRequest.Builder(ctx).data(model).memoryCacheKey(e.id).diskCacheKey(e.id).crossfade(true).build(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),

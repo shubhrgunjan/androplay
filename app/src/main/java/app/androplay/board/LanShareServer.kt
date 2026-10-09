@@ -137,6 +137,12 @@ class LanShareServer(private val app: AndroPlayApp) {
                     val body = """{"ok":true,"id":"${app.settings.deviceId}","name":${jsonStr(app.settings.deviceName)},"ip":${jsonStr(_endpoint.value.orEmpty())}}"""
                     reply(output, 200, body, "application/json")
                 }
+                headers.method == "GET" && headers.path.substringBefore('?').startsWith("/lan/thumb/") -> {
+                    val id = headers.path.substringBefore('?').removePrefix("/lan/thumb/").substringBefore('/')
+                    val item = app.store.item(id) ?: return reply(output, 404, "Unknown item")
+                    val file = app.thumbnails.file(item) ?: return reply(output, 404, "No thumbnail")
+                    replyFile(output, file, "image/jpeg")
+                }
                 headers.method == "PUT" && headers.path.substringBefore('?') == "/lan" -> {
                     val name = query(headers.path)["name"]?.trim().orEmpty().ifEmpty { "file" }
                     val type = ContentType.of(name, headers.fields["content-type"])
@@ -256,6 +262,13 @@ class LanShareServer(private val app: AndroPlayApp) {
         val head = "HTTP/1.1 $code $reason\r\nContent-Type: $type; charset=utf-8\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
         out.write(head.encodeToByteArray())
         out.write(bytes)
+        out.flush()
+    }
+
+    private fun replyFile(out: BufferedOutputStream, file: File, type: String) {
+        val head = "HTTP/1.1 200 OK\r\nContent-Type: $type\r\nContent-Length: ${file.length()}\r\nConnection: close\r\n\r\n"
+        out.write(head.encodeToByteArray())
+        file.inputStream().use { it.copyTo(out, 64 * 1024) }
         out.flush()
     }
 
