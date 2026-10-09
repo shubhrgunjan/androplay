@@ -2,10 +2,7 @@ package app.androplay.board
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Color
-import android.graphics.pdf.PdfRenderer
 import android.media.ThumbnailUtils
-import android.os.ParcelFileDescriptor
 import android.util.Size
 import app.androplay.protocol.ContentType
 import app.androplay.protocol.Item
@@ -43,17 +40,6 @@ class Thumbnails(ctx: Context, private val store: LocalStore) {
     private fun bitmap(src: File, type: ContentType): Bitmap? = when (type) {
         ContentType.VIDEO -> ThumbnailUtils.createVideoThumbnail(src, SIZE, null)
         ContentType.IMAGE -> ThumbnailUtils.createImageThumbnail(src, SIZE, null)
-        ContentType.AUDIO -> ThumbnailUtils.createAudioThumbnail(src, SIZE, null)
-        ContentType.PDF -> PdfRenderer(ParcelFileDescriptor.open(src, ParcelFileDescriptor.MODE_READ_ONLY)).use { r ->
-            r.openPage(0).use { page ->
-                val w = SIZE.width
-                val h = (w * page.height / page.width.toFloat()).toInt().coerceAtLeast(1)
-                Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also {
-                    it.eraseColor(Color.WHITE)
-                    page.render(it, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                }
-            }
-        }
         else -> null
     }
 

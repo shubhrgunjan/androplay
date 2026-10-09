@@ -5,7 +5,7 @@ import java.nio.ByteOrder
 
 /** Remote-control commands. Binary-encoded so each one is a single small BLE write. */
 sealed interface Command {
-    /** [start] is a position in ms for media, or a page index for PDFs. */
+    /** [start] is a position in ms for media. */
     data class Play(val handle: Int, val start: Int = 0) : Command
     data object Pause : Command
     data object Resume : Command
@@ -14,10 +14,9 @@ sealed interface Command {
     data class SeekBy(val deltaMs: Int) : Command
     data class Volume(val percent: Int) : Command
     data object ToggleMute : Command
-    /** Next page for PDFs, otherwise next item in the queue. */
+    /** Next item in the queue. */
     data object Next : Command
     data object Prev : Command
-    data class GoToPage(val page: Int) : Command
     data object Stop : Command
     data object ToggleLibrary : Command
     /** Presentation order used by Next/Prev and for preloading. */
@@ -25,7 +24,7 @@ sealed interface Command {
     /** Locks/unlocks the board's touchscreen (remotes and phones keep working). */
     data class Lock(val locked: Boolean) : Command
     /**
-     * Plays [handles] in order, auto-advancing: media when it ends, images and PDF pages after
+     * Plays [handles] in order, auto-advancing: media when it ends, images after
      * [imageSeconds]. Next/Prev/Pause work inside the show; Play or Stop ends it.
      */
     data class Slideshow(
@@ -63,7 +62,6 @@ sealed interface Command {
                 OP_MUTE -> ToggleMute
                 OP_NEXT -> Next
                 OP_PREV -> Prev
-                OP_PAGE -> GoToPage(b.u16())
                 OP_STOP -> Stop
                 OP_LIBRARY -> ToggleLibrary
                 OP_SET_QUEUE -> SetQueue(List(b.u16()) { b.u16() })
@@ -104,7 +102,6 @@ fun Command.encode(): ByteArray = when (this) {
     Command.ToggleMute -> frame(OP_MUTE)
     Command.Next -> frame(OP_NEXT)
     Command.Prev -> frame(OP_PREV)
-    is Command.GoToPage -> frame(OP_PAGE, 2) { putShort(page.toShort()) }
     Command.Stop -> frame(OP_STOP)
     Command.ToggleLibrary -> frame(OP_LIBRARY)
     is Command.SetQueue -> {
@@ -158,7 +155,6 @@ private const val OP_VOLUME = 0x07
 private const val OP_MUTE = 0x08
 private const val OP_NEXT = 0x09
 private const val OP_PREV = 0x0A
-private const val OP_PAGE = 0x0B
 private const val OP_STOP = 0x0C
 private const val OP_LIBRARY = 0x0D
 private const val OP_SET_QUEUE = 0x0E

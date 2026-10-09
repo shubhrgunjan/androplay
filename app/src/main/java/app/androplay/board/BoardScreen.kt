@@ -40,7 +40,6 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Repeat
@@ -143,7 +142,6 @@ fun BoardScreen(
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize().background(Color.Black),
                 )
-                is Display.Audio -> Message(Icons.Filled.MusicNote, Brand.BlueDark, d.item.name, "Playing audio")
                 is Display.External -> Message(
                     Icons.AutoMirrored.Filled.OpenInNew,
                     Brand.BlueDark,
@@ -450,9 +448,6 @@ private fun TypeChip(icon: ImageVector, label: String, count: Int, selected: Boo
 private fun typeIcon(t: ContentType): ImageVector = when (t) {
     ContentType.VIDEO -> Icons.Filled.Movie
     ContentType.IMAGE -> Icons.Filled.Image
-    ContentType.AUDIO -> Icons.Filled.MusicNote
-    ContentType.PDF -> Icons.Filled.PictureAsPdf
-    ContentType.DOCUMENT -> Icons.Filled.Description
     ContentType.OTHER -> Icons.AutoMirrored.Filled.InsertDriveFile
 }
 
@@ -572,7 +567,7 @@ private fun EmptyState() {
         Text("Nothing here yet", color = Board.Text, fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(10.dp))
         Text(
-            "Upload from the AndroPlay admin app, or put files in the board's Movies, Pictures, Music, Documents or Download folders.",
+            "Upload from the AndroPlay admin app, or put files in the board's Movies, Pictures, or Download folders.",
             color = Board.TextDim,
             fontSize = 18.sp,
             lineHeight = 26.sp,

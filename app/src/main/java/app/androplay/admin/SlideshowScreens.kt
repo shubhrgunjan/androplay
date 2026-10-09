@@ -51,7 +51,6 @@ import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Schedule
@@ -131,7 +130,7 @@ import java.util.UUID
 import kotlin.math.roundToInt
 
 /** Types a slideshow can time: documents open in other apps, so they're excluded. */
-private val SLIDE_TYPES = setOf(ContentType.VIDEO, ContentType.IMAGE, ContentType.AUDIO, ContentType.PDF)
+private val SLIDE_TYPES = setOf(ContentType.VIDEO, ContentType.IMAGE)
 
 fun newSlideshow(existing: Int) = Slideshow(id = UUID.randomUUID().toString().take(12), name = "Slideshow ${existing + 1}")
 
@@ -305,7 +304,7 @@ private fun EmptyShows() {
         Text("No slideshows yet", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Tap + to create a slideshow: pick videos, images, audio and PDFs in the order you want — " +
+            "Tap + to create a slideshow: pick videos and images in the order you want — " +
                 "or even other slideshows — then play it on the board in one tap.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -702,7 +701,7 @@ private fun EditorSettings(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Timer, null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(10.dp))
-                    Text("Seconds per image / PDF page", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                    Text("Seconds per image", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
                     Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.primaryContainer) {
                         Text(
                             "${seconds.roundToInt()} s",
@@ -715,7 +714,7 @@ private fun EditorSettings(
                 }
                 Slider(value = seconds, onValueChange = { onSeconds(it.roundToInt().toFloat()) }, valueRange = 2f..60f)
                 Text(
-                    "Videos and audio always play to the end",
+                    "Videos always play to the end",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -967,7 +966,7 @@ private fun SlideshowPicker(
                             }
                         }
                         if (media.isEmpty()) {
-                            PickerEmpty(Icons.Default.Collections, "No media yet", "Upload videos, images, audio or PDFs first.")
+                            PickerEmpty(Icons.Default.Collections, "No media yet", "Upload videos and images first.")
                         } else {
                             LazyVerticalGrid(
                                 columns = GridCells.Adaptive(140.dp),
@@ -1186,18 +1185,15 @@ private fun Thumb(
 private fun typeIcon(t: ContentType): ImageVector = when (t) {
     ContentType.VIDEO -> Icons.Default.Movie
     ContentType.IMAGE -> Icons.Default.Image
-    ContentType.AUDIO -> Icons.Default.MusicNote
-    ContentType.PDF -> Icons.Default.PictureAsPdf
     else -> Icons.Default.InsertDriveFile
 }
 
-private fun typeName(t: ContentType) = if (t == ContentType.PDF) "PDF" else t.folder.removeSuffix("s")
+private fun typeName(t: ContentType) = t.folder.removeSuffix("s")
 
 private fun mediaSubtitle(e: Entry): String {
     val c = e.content
     val extra = when (e.type) {
-        ContentType.VIDEO, ContentType.AUDIO -> c?.durationMs?.takeIf { it > 0 }?.let(::formatDuration)
-        ContentType.PDF -> c?.pageCount?.takeIf { it > 0 }?.let { plural(it, "page") }
+        ContentType.VIDEO -> c?.durationMs?.takeIf { it > 0 }?.let(::formatDuration)
         else -> null
     }
     val ready = if (e.status == EntryStatus.READY) "" else " · not on board"
@@ -1207,8 +1203,7 @@ private fun mediaSubtitle(e: Entry): String {
 private fun slideLabel(e: Entry, seconds: Int): String {
     val c = e.content
     val timing = when (e.type) {
-        ContentType.VIDEO, ContentType.AUDIO -> c?.durationMs?.takeIf { it > 0 }?.let { formatDuration(it) } ?: "plays to end"
-        ContentType.PDF -> c?.pageCount?.takeIf { it > 0 }?.let { "$it pages × ${seconds}s" } ?: "${seconds}s per page"
+        ContentType.VIDEO -> c?.durationMs?.takeIf { it > 0 }?.let { formatDuration(it) } ?: "plays to end"
         else -> "${seconds}s"
     }
     return "${typeName(e.type)} · $timing"
@@ -1230,8 +1225,7 @@ private fun showStats(show: Slideshow, all: Map<String, Slideshow>, byId: Map<St
 private fun List<Slide>.durationMs(byId: Map<String, Entry>): Long = sumOf { s ->
     val e = byId[s.contentId] ?: return@sumOf 0L
     when (e.type) {
-        ContentType.VIDEO, ContentType.AUDIO -> e.content?.durationMs ?: 0L
-        ContentType.PDF -> (e.content?.pageCount?.coerceAtLeast(1) ?: 1) * s.seconds * 1000L
+        ContentType.VIDEO -> e.content?.durationMs ?: 0L
         else -> s.seconds * 1000L
     }
 }

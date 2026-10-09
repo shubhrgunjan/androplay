@@ -160,7 +160,7 @@ class MainActivity : ComponentActivity() {
                         )
                         Text(
                             if (detectedBoard) "Detected ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}. It will play content full-screen and sync automatically."
-                            else "Upload videos, images and PDFs, and control the board.",
+                            else "Upload videos and images, and control the board.",
                             style = MaterialTheme.typography.bodyLarge,
                         )
                         Button(onClick = { choose(primary) }, modifier = Modifier.fillMaxWidth().height(56.dp)) {

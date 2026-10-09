@@ -113,7 +113,7 @@ data class Slideshow(
     val id: String,
     val name: String,
     val items: List<String> = emptyList(),
-    val imageSeconds: Int = 8, // how long each image / PDF page stays up
+    val imageSeconds: Int = 8, // how long each image stays up
     val loop: Boolean = true,
     val updatedAt: Long = System.currentTimeMillis(),
     /** Position in the slideshow list (drag to reorder); also the order used by "Play all". */

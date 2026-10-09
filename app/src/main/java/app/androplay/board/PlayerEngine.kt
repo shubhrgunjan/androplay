@@ -4,12 +4,9 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.Color
 import android.graphics.ImageDecoder
-import android.graphics.pdf.PdfRenderer
 import android.media.AudioManager
 import android.net.Uri
-import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.util.LruCache
 import android.util.Size
@@ -53,7 +50,7 @@ import kotlin.math.roundToInt
  * activity restarts. All methods must be called on the main thread.
  *
  * Instant switching: the next queue item is prepared in a standby ExoPlayer (or decoded into the
- * still cache for images/PDF pages); playing it just swaps which player owns the surface.
+ * still cache for images); playing it just swaps which player owns the surface.
  */
 @OptIn(UnstableApi::class)
 class PlayerEngine(
@@ -68,8 +65,7 @@ class PlayerEngine(
             override val item: Item? = null
         }
         data class Video(override val item: Item) : Display
-        data class Audio(override val item: Item) : Display
-        data class Still(override val item: Item, val bitmap: Bitmap, val page: Int) : Display
+        data class Still(override val item: Item, val bitmap: Bitmap) : Display
         data class External(override val item: Item) : Display
         data class Failed(override val item: Item?, val message: String) : Display
     }
@@ -117,7 +113,7 @@ class PlayerEngine(
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            if (_display.value is Display.Video || _display.value is Display.Audio) {
+            if (_display.value is Display.Video) {
                 _display.value = Display.Failed(current, "Can't play ${current?.name}: ${error.errorCodeName}")
                 publish()
             }
@@ -136,17 +132,15 @@ class PlayerEngine(
             value?.player = active
         }
 
-    /** Pixel size used to decode images and render PDF pages. */
+    /** Pixel size used to decode images. */
     var screen: Size = ctx.resources.displayMetrics.let { Size(it.widthPixels, it.heightPixels) }
 
     private var current: Item? = null
     private var queue: List<Int> = emptyList()
-    private var page = 0
     private var loadJob: Job? = null
 
-    // PdfRenderer is single-threaded: every PDF/image decode runs on this one thread.
+    // Image decode runs on this single thread.
     private val stillDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
-    private var pdfSession: Pair<String, PdfRenderer>? = null
     private val stills = object : LruCache<String, Bitmap>(192 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap) = value.allocationByteCount
     }
@@ -162,7 +156,7 @@ class PlayerEngine(
         }
     }
 
-    /** Frees decoded images/PDF pages (the one on screen stays referenced by [display]). */
+    /** Frees decoded images (the one on screen stays referenced by [display]). */
     fun trimCaches() {
         stills.evictAll()
     }
@@ -197,10 +191,6 @@ class PlayerEngine(
             Command.ToggleMute -> audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_TOGGLE_MUTE, 0)
             Command.Next -> if (show != null) showStep(+1, auto = false) else step(+1)
             Command.Prev -> if (show != null) showStep(-1, auto = false) else step(-1)
-            is Command.GoToPage -> current?.takeIf { it.type == ContentType.PDF }?.let {
-                showPage(it, cmd.page)
-                if (show != null) armShow() // new page gets its full time
-            }
             Command.Stop -> {
                 endShow()
                 stop()
@@ -227,16 +217,12 @@ class PlayerEngine(
         val same = current?.id == item.id
         current = item
         when (item.type) {
-            ContentType.VIDEO, ContentType.AUDIO -> playMedia(item, file, start.toLong(), restart = same)
+            ContentType.VIDEO -> playMedia(item, file, start.toLong(), restart = same)
             ContentType.IMAGE -> {
                 haltMedia()
-                showStill(item, 0) { decodeImage(file) }
+                showStill(item) { decodeImage(file) }
             }
-            ContentType.PDF -> {
-                haltMedia()
-                showPage(item, start)
-            }
-            ContentType.DOCUMENT, ContentType.OTHER -> {
+            ContentType.OTHER -> {
                 haltMedia()
                 openExternal(item, file)
             }
@@ -263,7 +249,7 @@ class PlayerEngine(
             }
         }
         active.playWhenReady = true
-        _display.value = if (item.type == ContentType.VIDEO) Display.Video(item) else Display.Audio(item)
+        _display.value = Display.Video(item)
     }
 
     private fun haltMedia() {
@@ -277,7 +263,7 @@ class PlayerEngine(
     }
 
     private fun seekTo(ms: Long) {
-        if (_display.value !is Display.Video && _display.value !is Display.Audio) return
+        if (_display.value !is Display.Video) return
         val duration = active.duration.takeIf { it != C.TIME_UNSET } ?: Long.MAX_VALUE
         active.seekTo(ms.coerceIn(0, duration))
     }
@@ -312,9 +298,9 @@ class PlayerEngine(
     private var stillElapsed = 0L
 
     private fun startShow(cmd: Command.Slideshow) {
-        // Documents open in other apps and can't be timed, so they're skipped.
+        // OTHER content opens in other apps and can't be timed, so they're skipped.
         val keep = cmd.handles.indices.filter { i ->
-            library.byHandle(cmd.handles[i])?.type?.let { it != ContentType.DOCUMENT && it != ContentType.OTHER } == true
+            library.byHandle(cmd.handles[i])?.type?.let { it != ContentType.OTHER } == true
         }
         if (keep.isEmpty()) return
         val s = Show(keep.map { cmd.handles[it] }, keep.map { cmd.secondsAt(it).coerceAtLeast(1) }, cmd.loop)
@@ -332,9 +318,9 @@ class PlayerEngine(
         stillElapsed = 0
     }
 
-    private fun showingStill() = show != null && (current?.type == ContentType.IMAGE || current?.type == ContentType.PDF)
+    private fun showingStill() = show != null && current?.type == ContentType.IMAGE
 
-    private fun loneStill() = show == null && (current?.type == ContentType.IMAGE || current?.type == ContentType.PDF)
+    private fun loneStill() = show == null && current?.type == ContentType.IMAGE
 
     private fun stillRunning() = show != null && stillStartedAt > 0
 
@@ -364,14 +350,14 @@ class PlayerEngine(
 
     private fun showSlide(s: Show, index: Int, lastPage: Boolean) {
         s.index = index
-        library.byHandle(s.handles[index])?.let { open(it, if (lastPage && it.type == ContentType.PDF) it.pageCount - 1 else 0) }
+        library.byHandle(s.handles[index])?.let { open(it, 0) }
             ?: fail(null, "A slide is missing on the board")
         preloadShowNext(s)
         armShow()
     }
 
     /**
-     * Images and PDF pages advance on their own timer; media advances when it ends (see listener).
+     * Images advance on their own timer; media advances when it ends (see listener).
      * [elapsed] > 0 resumes mid-slide, so only the remaining time is waited.
      */
     private fun armShow(elapsed: Long = 0) {
@@ -388,18 +374,9 @@ class PlayerEngine(
         }
     }
 
-    /** Moves within the slideshow: PDF pages first, then slides; wraps when looping. */
+    /** Moves within the slideshow; wraps when looping. */
     private fun showStep(dir: Int, auto: Boolean) {
         val s = show ?: return
-        val cur = current
-        if (cur?.type == ContentType.PDF) {
-            val target = page + dir
-            if (target >= 0 && (cur.pageCount == 0 || target < cur.pageCount)) {
-                showPage(cur, target)
-                armShow()
-                return
-            }
-        }
         val next = s.index + dir
         val index = when {
             next in s.handles.indices -> next
@@ -425,16 +402,8 @@ class PlayerEngine(
     }
 
     private fun step(dir: Int) {
-        val cur = current
-        if (cur?.type == ContentType.PDF) {
-            val target = page + dir
-            if (target >= 0 && (cur.pageCount == 0 || target < cur.pageCount)) {
-                showPage(cur, target)
-                return
-            }
-        }
         val handle = neighbour(dir) ?: return
-        library.byHandle(handle)?.let { open(it, if (dir < 0 && it.type == ContentType.PDF) it.pageCount - 1 else 0) }
+        library.byHandle(handle)?.let { open(it, 0) }
     }
 
     private fun order(): List<Int> = queue.ifEmpty { library.items().map { it.handle } }
@@ -457,33 +426,21 @@ class PlayerEngine(
         val item = library.byHandle(handle) ?: return
         val file = library.fileOf(item.id) ?: return
         when (item.type) {
-            ContentType.VIDEO, ContentType.AUDIO -> if (standbyHandle != handle) {
+            ContentType.VIDEO -> if (standbyHandle != handle) {
                 standby.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
                 standby.playWhenReady = false
                 standby.prepare()
                 standbyHandle = handle
             }
-            ContentType.IMAGE -> preloadStill(item, 0) { decodeImage(file) }
-            ContentType.PDF -> preloadStill(item, 0) { renderPdfPage(file, item.id, 0, keepOpen = false) }
+            ContentType.IMAGE -> preloadStill(item) { decodeImage(file) }
             else -> Unit
         }
     }
 
-    // --- Images & PDF -------------------------------------------------------------------------
-
-    private fun showPage(item: Item, requested: Int) {
-        val last = if (item.pageCount > 0) item.pageCount - 1 else Int.MAX_VALUE
-        val p = requested.coerceIn(0, last)
-        val file = library.fileOf(item.id) ?: return fail(item, "${item.name} is missing on the board")
-        page = p
-        showStill(item, p) { renderPdfPage(file, item.id, p, keepOpen = true) }
-        if (p + 1 <= last) preloadStill(item, p + 1) { renderPdfPage(file, item.id, p + 1, keepOpen = true) }
-    }
-
-    private fun showStill(item: Item, page: Int, load: () -> Bitmap?) {
-        val key = "${item.id}:$page"
+    private fun showStill(item: Item, load: () -> Bitmap?) {
+        val key = "${item.id}"
         stills.get(key)?.let {
-            _display.value = Display.Still(item, it, page)
+            _display.value = Display.Still(item, it)
             return
         }
         loadJob?.cancel()
@@ -494,14 +451,14 @@ class PlayerEngine(
                 fail(item, "Can't open ${item.name}")
             } else {
                 stills.put(key, bitmap)
-                _display.value = Display.Still(item, bitmap, page)
+                _display.value = Display.Still(item, bitmap)
             }
             publish()
         }
     }
 
-    private fun preloadStill(item: Item, page: Int, load: () -> Bitmap?) {
-        val key = "${item.id}:$page"
+    private fun preloadStill(item: Item, load: () -> Bitmap?) {
+        val key = "${item.id}"
         if (stills.get(key) != null) return
         scope.launch(stillDispatcher) { runCatching { load() }.getOrNull()?.let { stills.put(key, it) } }
     }
@@ -513,35 +470,6 @@ class PlayerEngine(
             val scale = min(1f, min(screen.width / w.toFloat(), screen.height / h.toFloat()))
             if (scale < 1f) decoder.setTargetSize((w * scale).roundToInt().coerceAtLeast(1), (h * scale).roundToInt().coerceAtLeast(1))
         }
-
-    /** Runs on [stillDispatcher] only. */
-    private fun renderPdfPage(file: File, id: String, index: Int, keepOpen: Boolean): Bitmap? {
-        val renderer = if (keepOpen) {
-            pdfSession?.takeIf { it.first == id }?.second ?: run {
-                pdfSession?.second?.close()
-                PdfRenderer(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY))
-                    .also { pdfSession = id to it }
-            }
-        } else {
-            PdfRenderer(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY))
-        }
-        try {
-            if (index !in 0 until renderer.pageCount) return null
-            renderer.openPage(index).use { pg ->
-                val scale = min(screen.width / pg.width.toFloat(), screen.height / pg.height.toFloat())
-                val bitmap = Bitmap.createBitmap(
-                    (pg.width * scale).roundToInt().coerceAtLeast(1),
-                    (pg.height * scale).roundToInt().coerceAtLeast(1),
-                    Bitmap.Config.ARGB_8888,
-                )
-                bitmap.eraseColor(Color.WHITE)
-                pg.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                return bitmap
-            }
-        } finally {
-            if (!keepOpen) renderer.close()
-        }
-    }
 
     // --- Other formats ------------------------------------------------------------------------
 
@@ -577,7 +505,7 @@ class PlayerEngine(
     private fun publish() {
         val item = current
         val d = _display.value
-        val media = d is Display.Video || d is Display.Audio
+        val media = d is Display.Video
         val timedStill = d is Display.Still && showingStill()
         val status = when {
             item == null -> Status.IDLE
@@ -607,8 +535,8 @@ class PlayerEngine(
             },
             volume = if (max > 0) audio.getStreamVolume(AudioManager.STREAM_MUSIC) * 100 / max else 0,
             muted = audio.isStreamMute(AudioManager.STREAM_MUSIC),
-            page = if (item?.type == ContentType.PDF) page else 0,
-            pageCount = if (item?.type == ContentType.PDF) item.pageCount else 0,
+            page = 0,
+            pageCount = 0,
             manifestVersion = library.manifest.value.version,
             locked = locked.value,
             slideshow = show != null,

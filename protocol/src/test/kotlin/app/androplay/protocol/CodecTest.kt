@@ -10,7 +10,7 @@ class CodecTest {
         val commands = listOf(
             Command.Play(65000, 12_345), Command.Pause, Command.Resume, Command.Toggle,
             Command.Seek(3_600_000), Command.SeekBy(-10_000), Command.Volume(73), Command.ToggleMute,
-            Command.Next, Command.Prev, Command.GoToPage(41), Command.Stop, Command.ToggleLibrary,
+            Command.Next, Command.Prev, Command.Stop, Command.ToggleLibrary,
             Command.SetQueue(listOf(1, 2, 300, 65000)), Command.Lock(true), Command.Lock(false),
             Command.Slideshow(listOf(5, 9, 1200), 8, loop = true, start = 1), Command.Slideshow(emptyList(), 30, loop = false),
             Command.Slideshow(listOf(5, 9, 5), 4, loop = true, start = 2, seconds = listOf(4, 12, 30)),
@@ -33,8 +33,7 @@ class CodecTest {
     @Test
     fun contentTypes() {
         assertEquals(ContentType.VIDEO, ContentType.of("talk.MP4"))
-        assertEquals(ContentType.PDF, ContentType.of("x", "application/pdf"))
-        assertEquals(ContentType.DOCUMENT, ContentType.of("deck.pptx"))
+        assertEquals(ContentType.IMAGE, ContentType.of("photo.JPG"))
         assertEquals(ContentType.OTHER, ContentType.of("app.apk", "application/vnd.android.package-archive"))
     }
 }

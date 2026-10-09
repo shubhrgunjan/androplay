@@ -5,12 +5,9 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
-import android.graphics.Color
 import android.graphics.ImageDecoder
-import android.graphics.pdf.PdfRenderer
 import android.media.MediaMetadataRetriever
 import android.net.Uri
-import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
@@ -163,27 +160,14 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
                 d.setTargetSize((info.size.width * s).toInt().coerceAtLeast(1), (info.size.height * s).toInt().coerceAtLeast(1))
                 d.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
             }
-            ContentType.VIDEO, ContentType.AUDIO -> MediaMetadataRetriever().let { r ->
+            ContentType.VIDEO -> MediaMetadataRetriever().let { r ->
                 try {
                     r.setDataSource(applicationContext, uri)
-                    if (type == ContentType.AUDIO) {
-                        r.embeddedPicture?.let { android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size) }
-                    } else {
-                        r.getScaledFrameAtTime(1_000_000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 480, 270)
-                    }
+                    r.getScaledFrameAtTime(1_000_000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 480, 270)
                 } finally {
                     r.release()
                 }
             } ?: return null
-            ContentType.PDF -> PdfRenderer(cr.openFileDescriptor(uri, "r") ?: return null).use { r ->
-                r.openPage(0).use { p ->
-                    Bitmap.createBitmap(480, (480 * p.height / p.width.toFloat()).toInt().coerceAtLeast(1), Bitmap.Config.ARGB_8888)
-                        .also {
-                            it.eraseColor(Color.WHITE)
-                            p.render(it, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                        }
-                }
-            }
             else -> return null
         }
         return ByteArrayOutputStream().use {

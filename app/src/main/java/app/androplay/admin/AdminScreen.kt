@@ -55,7 +55,6 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay10
@@ -556,7 +555,7 @@ private fun LibraryPane(
             order.isEmpty() -> EmptyState(
                 icon = Icons.Default.VideoLibrary,
                 title = "Your library is empty",
-                text = "Add videos, images, PDFs or documents. They sync to every board automatically.",
+                text = "Add videos and images. They sync to every board automatically.",
                 action = "Add content",
                 actionIcon = Icons.Default.Add,
                 onAction = onAdd,
@@ -937,8 +936,8 @@ private fun NowPlayingCard(repo: AdminRepository, state: PlaybackState?, entries
     val ctx = LocalContext.current
     val s = state ?: PlaybackState()
     val current = entries.firstOrNull { it.content?.handle == s.handle }
-    val media = current?.type == ContentType.VIDEO || current?.type == ContentType.AUDIO
-    val still = current?.type == ContentType.IMAGE || current?.type == ContentType.PDF
+    val media = current?.type == ContentType.VIDEO
+    val still = current?.type == ContentType.IMAGE
     // Something on screen can be paused/seeked: media, or a timed slideshow still.
     val active = s.status == Status.PLAYING || s.status == Status.PAUSED
     val pausable = (media && (active || s.status == Status.LOADING || s.status == Status.ENDED)) || (s.durationMs > 0 && active)
@@ -995,7 +994,6 @@ private fun NowPlayingCard(repo: AdminRepository, state: PlaybackState?, entries
     }
     val subtitle = when {
         current == null && s.handle == PlaybackState.NO_HANDLE -> "Tap a tile to play it on the board"
-        current?.type == ContentType.PDF && s.pageCount > 0 -> "Page ${s.page + 1}/${s.pageCount} · $statusText"
         else -> statusText
     }
 
@@ -1213,9 +1211,6 @@ private fun StatusDot(color: Color, size: Dp = 8.dp) {
 private fun typeIcon(t: ContentType): ImageVector = when (t) {
     ContentType.VIDEO -> Icons.Default.Movie
     ContentType.IMAGE -> Icons.Default.Image
-    ContentType.AUDIO -> Icons.Default.MusicNote
-    ContentType.PDF -> Icons.Default.PictureAsPdf
-    ContentType.DOCUMENT -> Icons.Default.Description
     ContentType.OTHER -> Icons.Default.InsertDriveFile
 }
 

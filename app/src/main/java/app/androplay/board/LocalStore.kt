@@ -1,11 +1,9 @@
 package app.androplay.board
 
 import android.content.Context
-import android.graphics.pdf.PdfRenderer
 import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
 import android.os.Environment
-import android.os.ParcelFileDescriptor
 import android.os.StatFs
 import app.androplay.protocol.ContentType
 import app.androplay.protocol.Item
@@ -121,17 +119,14 @@ class LocalStore(private val ctx: Context) {
         return file
     }
 
-    /** Duration (ms) for media, page count for PDFs. */
+    /** Duration (ms) for media. */
     fun probe(file: File, type: ContentType): Pair<Long, Int> = when (type) {
-        ContentType.VIDEO, ContentType.AUDIO -> runCatching {
+        ContentType.VIDEO -> runCatching {
             MediaMetadataRetriever().use { r ->
                 r.setDataSource(file.absolutePath)
                 r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
             }
         }.getOrDefault(0L) to 0
-        ContentType.PDF -> 0L to runCatching {
-            PdfRenderer(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)).use { it.pageCount }
-        }.getOrDefault(0)
         else -> 0L to 0
     }
 
