@@ -26,6 +26,7 @@ One Android app, two roles:
 - Content sorted by type: Videos · Images · Audio · PDFs · Documents · Other
 - Board-side files (USB, Downloads, Movies…) are indexed and controllable too
 - Instant switching through a two-player A/B swap and image/PDF page pre-rendering
+- **Slideshows**: put any videos, images, audio and PDFs in a series. Videos play to the end, images and PDF pages show for a set time, and an optional loop starts it again. Start one from the phone or by touch on the board
 - Bluetooth HID remotes and presenter clickers work out of the box (media keys, Page Up/Down)
 - Kiosk-ready: auto-start on boot, optional home-launcher mode
 

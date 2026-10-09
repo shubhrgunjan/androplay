@@ -153,6 +153,7 @@ class BoardSync(
 
     private fun handleEvent(e: Backend.Event) {
         when (e.op) {
+            "show" -> refreshShows()
             "add", "update" -> {
                 val c = backend.content(e.contentId)
                 trackIncoming(e.contentId, c)
@@ -193,7 +194,12 @@ class BoardSync(
 
     /** Brings local storage and the backend into agreement. Safe to run any time. */
     @Synchronized
+    private fun refreshShows() {
+        runCatching { app.boardShows.value = backend.slideshows() }
+    }
+
     private fun reconcile() {
+        refreshShows()
         val contents = backend.allContent().associateBy { it.id }.toMutableMap()
 
         // 1. Files dropped onto the board (USB, Downloads…) become content admins can play.

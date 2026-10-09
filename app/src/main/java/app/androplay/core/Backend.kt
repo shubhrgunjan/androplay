@@ -6,7 +6,10 @@ import app.androplay.protocol.ContentType
 import app.androplay.protocol.Item
 import app.androplay.protocol.Origin
 import app.androplay.protocol.PlaybackState
+import app.androplay.protocol.ProtocolJson
 import app.androplay.protocol.encode
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 import java.io.Closeable
 
 /** Content metadata as stored in Redis (`ap:content:{id}`). Bytes live in object storage. */
@@ -98,6 +101,17 @@ data class BoardInfo(
     }
 }
 
+/** An ordered series of content played one after another (stored as JSON in `ap:shows`). */
+@Serializable
+data class Slideshow(
+    val id: String,
+    val name: String,
+    val items: List<String> = emptyList(), // content ids, in play order
+    val imageSeconds: Int = 8, // how long each image / PDF page stays up
+    val loop: Boolean = true,
+    val updatedAt: Long = System.currentTimeMillis(),
+)
+
 /** Sync status of one board: what it has and what it's downloading. */
 data class BoardSyncState(val have: Set<String> = emptySet(), val progress: Map<String, Long> = emptyMap())
 
@@ -111,6 +125,7 @@ class Backend(val config: BackendConfig) : Closeable {
     private val kEvents = "${p}events"
     private val kBoards = "${p}boards"
     private val kHandle = "${p}handle"
+    private val kShows = "${p}shows"
     private fun kItem(id: String) = "${p}content:$id"
     private fun kBoard(b: String) = "${p}board:$b"
     private fun kOnline(b: String) = "${p}board:$b:online"
@@ -177,6 +192,22 @@ class Backend(val config: BackendConfig) : Closeable {
 
     fun deleteContent(id: String) {
         redis.pipeline(listOf(arrayOf("DEL", kItem(id)), arrayOf("ZREM", kContent, id), event("remove", id)))
+    }
+
+    // --- Slideshows --------------------------------------------------------------------------
+
+    fun slideshows(): List<Slideshow> =
+        (redis.call("HGETALL", kShows) as? List<*>)?.toStringMap()?.values
+            ?.mapNotNull { runCatching { ProtocolJson.decodeFromString<Slideshow>(it) }.getOrNull() }
+            ?.sortedByDescending { it.updatedAt }
+            .orEmpty()
+
+    fun putSlideshow(show: Slideshow) {
+        redis.pipeline(listOf(arrayOf("HSET", kShows, show.id, ProtocolJson.encodeToString(show)), event("show", show.id)))
+    }
+
+    fun deleteSlideshow(id: String) {
+        redis.pipeline(listOf(arrayOf("HDEL", kShows, id), event("show", id)))
     }
 
     private fun event(op: String, id: String) = arrayOf("XADD", kEvents, "MAXLEN", "~", "10000", "*", "op", op, "id", id)

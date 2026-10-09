@@ -24,6 +24,11 @@ sealed interface Command {
     data class SetQueue(val handles: List<Int>) : Command
     /** Locks/unlocks the board's touchscreen (remotes and phones keep working). */
     data class Lock(val locked: Boolean) : Command
+    /**
+     * Plays [handles] in order, auto-advancing: media when it ends, images and PDF pages after
+     * [imageSeconds]. Next/Prev/Pause work inside the show; Play or Stop ends it.
+     */
+    data class Slideshow(val handles: List<Int>, val imageSeconds: Int, val loop: Boolean, val start: Int = 0) : Command
     class Auth(val token: ByteArray) : Command
 
     companion object {
@@ -54,6 +59,12 @@ sealed interface Command {
                 OP_LIBRARY -> ToggleLibrary
                 OP_SET_QUEUE -> SetQueue(List(b.u16()) { b.u16() })
                 OP_LOCK -> Lock(b.get().toInt() != 0)
+                OP_SLIDESHOW -> {
+                    val seconds = b.u16()
+                    val loop = b.get().toInt() != 0
+                    val start = b.u16()
+                    Slideshow(List(b.u16()) { b.u16() }, seconds, loop, start)
+                }
                 OP_AUTH -> Auth(ByteArray(b.remaining()).also { b.get(it) })
                 else -> null
             }
@@ -83,6 +94,16 @@ fun Command.encode(): ByteArray = when (this) {
         }
     }
     is Command.Lock -> frame(OP_LOCK, 1) { put(if (locked) 1 else 0) }
+    is Command.Slideshow -> {
+        val hs = handles.take(Command.MAX_QUEUE)
+        frame(OP_SLIDESHOW, 7 + hs.size * 2) {
+            putShort(imageSeconds.coerceIn(1, 3600).toShort())
+            put(if (loop) 1 else 0)
+            putShort(start.toShort())
+            putShort(hs.size.toShort())
+            hs.forEach { putShort(it.toShort()) }
+        }
+    }
     is Command.Auth -> frame(OP_AUTH, token.size) { put(token) }
 }
 
@@ -110,4 +131,5 @@ private const val OP_STOP = 0x0C
 private const val OP_LIBRARY = 0x0D
 private const val OP_SET_QUEUE = 0x0E
 private const val OP_LOCK = 0x0F
+private const val OP_SLIDESHOW = 0x10
 private const val OP_AUTH = 0x7F

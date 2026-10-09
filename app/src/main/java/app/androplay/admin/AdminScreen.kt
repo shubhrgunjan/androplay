@@ -51,6 +51,10 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import app.androplay.core.Slideshow
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
@@ -108,6 +112,9 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSettings: (
     var menuFor by remember { mutableStateOf<Entry?>(null) }
     var confirmDelete by remember { mutableStateOf<Entry?>(null) }
     var lastQueue by remember { mutableStateOf<List<Int>>(emptyList()) }
+    var tab by remember { mutableIntStateOf(0) } // 0 = Library, 1 = Slideshows
+    var editing by remember { mutableStateOf<Slideshow?>(null) }
+    val shows by repo.shows.collectAsState()
 
     val visible = entries.filter { filter == null || it.type == filter }
     val send: (Command) -> Unit = { cmd -> scope.launch { repo.send(cmd) } }
@@ -171,10 +178,21 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSettings: (
                 },
             )
         },
-        floatingActionButton = { FloatingActionButton(onClick = onAdd) { Icon(Icons.Default.Add, "Add content") } },
+        floatingActionButton = {
+            FloatingActionButton(onClick = { if (tab == 0) onAdd() else editing = newSlideshow(shows.size) }) {
+                Icon(Icons.Default.Add, if (tab == 0) "Add content" else "New slideshow")
+            }
+        },
         bottomBar = { RemoteBar(state, entries, send) },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
+            TabRow(selectedTabIndex = tab) {
+                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Library") })
+                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Slideshows${if (shows.isNotEmpty()) " ${shows.size}" else ""}") })
+            }
+            if (tab == 1) {
+                SlideshowsPane(repo, entries, onEdit = { editing = it })
+            } else Column(Modifier.fillMaxSize()) {
             LazyRow(contentPadding = PaddingValues(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 item { FilterChip(selected = filter == null, onClick = { filter = null }, label = { Text("All ${entries.size}") }) }
                 items(ContentType.entries.filter { t -> entries.any { it.type == t } }) { t ->
@@ -231,8 +249,11 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSettings: (
                     }
                 }
             }
+            }
         }
     }
+
+    editing?.let { show -> SlideshowEditor(repo, entries, show, onDismiss = { editing = null }) }
 
     confirmDelete?.let { e ->
         AlertDialog(
@@ -316,7 +337,7 @@ private fun RemoteBar(state: PlaybackState?, entries: List<Entry>, send: (Comman
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(current?.name ?: "Nothing playing", fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text((if (s.slideshow) "Slideshow · " else "") + (current?.name ?: "Nothing playing"), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(
                         when {
                             current?.type == ContentType.PDF -> "Page ${s.page + 1} of ${s.pageCount}"

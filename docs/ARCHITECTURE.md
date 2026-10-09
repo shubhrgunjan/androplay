@@ -77,6 +77,7 @@ Prefix `ap:` (configurable, so several labs can share one Redis).
 | `ap:content` | ZSET | contentId → addedAt |
 | `ap:content:{id}` | HASH | name, type, mime, size, objectKey, origin, addedBy, addedAt, status (`uploading`/`ready`) |
 | `ap:events` | STREAM | `{op: add\|remove\|update, id}`; trimmed `MAXLEN ~10000` |
+| `ap:shows` | HASH | slideshowId → JSON `{name, items[contentId…], imageSeconds, loop}`; changes emit `op=show` on `ap:events` |
 | `ap:boards` | SET | board ids |
 | `ap:board:{b}` | HASH | name, model, ip, appVersion, freeBytes, lastSeen |
 | `ap:board:{b}:online` | STRING (TTL 15 s) | heartbeat |

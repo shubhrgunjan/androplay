@@ -102,6 +102,10 @@ class PlayerEngine(
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
             if (player !== active) return
+            // Slideshow: a finished video/audio moves on to the next slide.
+            if (show != null && events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED) && player.playbackState == Player.STATE_ENDED) {
+                advance()
+            }
             // Buffering mid-playback of a *local* file means the device is struggling.
             if (events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED) && player.playbackState == Player.STATE_BUFFERING &&
                 player.playWhenReady && player.currentPosition > 1_000
@@ -166,27 +170,44 @@ class PlayerEngine(
 
     fun handle(cmd: Command) {
         when (cmd) {
-            is Command.Play -> library.byHandle(cmd.handle)?.let { open(it, cmd.start) }
-            Command.Pause -> active.pause()
-            Command.Resume -> resume()
-            Command.Toggle -> if (active.isPlaying) active.pause() else resume()
+            is Command.Play -> {
+                endShow()
+                library.byHandle(cmd.handle)?.let { open(it, cmd.start) }
+            }
+            Command.Pause -> if (showingStill()) pauseStill() else active.pause()
+            Command.Resume -> if (showingStill()) armShow() else resume()
+            Command.Toggle -> when {
+                showingStill() -> if (stillPaused) armShow() else pauseStill()
+                active.isPlaying -> active.pause()
+                else -> resume()
+            }
             is Command.Seek -> seekTo(cmd.positionMs.toLong())
             is Command.SeekBy -> seekTo(active.currentPosition + cmd.deltaMs)
             is Command.Volume -> setVolume(cmd.percent)
             Command.ToggleMute -> audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_TOGGLE_MUTE, 0)
-            Command.Next -> step(+1)
-            Command.Prev -> step(-1)
+            Command.Next -> {
+                step(+1)
+                armShow()
+            }
+            Command.Prev -> {
+                step(-1)
+                armShow()
+            }
             is Command.GoToPage -> current?.takeIf { it.type == ContentType.PDF }?.let { showPage(it, cmd.page) }
-            Command.Stop -> stop()
+            Command.Stop -> {
+                endShow()
+                stop()
+            }
             Command.ToggleLibrary -> if (!locked.value) libraryVisible.value = !libraryVisible.value || current == null
             is Command.Lock -> {
                 locked.value = cmd.locked
                 prefs.edit().putBoolean("locked", cmd.locked).apply()
             }
-            is Command.SetQueue -> {
+            is Command.SetQueue -> if (show == null) {
                 queue = cmd.handles
                 preloadNext()
             }
+            is Command.Slideshow -> startShow(cmd)
             is Command.Auth -> Unit
         }
         publish()
@@ -267,6 +288,75 @@ class PlayerEngine(
         libraryVisible.value = true
     }
 
+    // --- Slideshow ----------------------------------------------------------------------------
+
+    private class Show(val handles: List<Int>, val stillMs: Long, val loop: Boolean)
+
+    private var show: Show? = null
+    private var showTimer: Job? = null
+    private var stillPaused = false
+
+    private fun startShow(cmd: Command.Slideshow) {
+        // Documents open in other apps and can't be timed, so they're skipped.
+        val playable = cmd.handles.filter { h ->
+            library.byHandle(h)?.type?.let { it != ContentType.DOCUMENT && it != ContentType.OTHER } == true
+        }
+        if (playable.isEmpty()) return
+        show = Show(playable, cmd.imageSeconds.coerceAtLeast(1) * 1000L, cmd.loop)
+        queue = playable
+        library.byHandle(playable[cmd.start.coerceIn(0, playable.size - 1)])?.let { open(it, 0) }
+        armShow()
+    }
+
+    private fun endShow() {
+        show = null
+        showTimer?.cancel()
+        stillPaused = false
+    }
+
+    private fun showingStill() = show != null && (current?.type == ContentType.IMAGE || current?.type == ContentType.PDF)
+
+    private fun pauseStill() {
+        showTimer?.cancel()
+        stillPaused = true
+    }
+
+    /** Images and PDF pages advance on a timer; media advances when it ends (see listener). */
+    private fun armShow() {
+        showTimer?.cancel()
+        stillPaused = false
+        val s = show ?: return
+        if (showingStill()) {
+            showTimer = scope.launch(Dispatchers.Main) {
+                delay(s.stillMs)
+                advance()
+            }
+        }
+    }
+
+    private fun advance() {
+        val s = show ?: return
+        val cur = current
+        if (cur?.type == ContentType.PDF && (cur.pageCount == 0 || page + 1 < cur.pageCount)) {
+            showPage(cur, page + 1)
+        } else {
+            val i = s.handles.indexOf(cur?.handle ?: -1)
+            val next = when {
+                i + 1 < s.handles.size -> s.handles[i + 1]
+                s.loop -> s.handles.first()
+                else -> null
+            }
+            if (next == null) {
+                endShow() // finished: stay on the last slide
+                publish()
+                return
+            }
+            library.byHandle(next)?.let { open(it, 0) }
+        }
+        armShow()
+        publish()
+    }
+
     private fun step(dir: Int) {
         val cur = current
         if (cur?.type == ContentType.PDF) {
@@ -286,7 +376,8 @@ class PlayerEngine(
         val list = order()
         if (list.isEmpty()) return null
         val i = list.indexOf(current?.handle ?: -1)
-        return if (i < 0) (if (dir > 0) list.first() else list.last()) else list.getOrNull(i + dir)
+        if (i < 0) return if (dir > 0) list.first() else list.last()
+        return list.getOrNull(i + dir) ?: if (show?.loop == true) (if (dir > 0) list.first() else list.last()) else null
     }
 
     private fun preloadNext() {
@@ -399,6 +490,14 @@ class PlayerEngine(
     private fun fail(item: Item?, message: String) {
         _display.value = Display.Failed(item, message)
         publish()
+        // Never let one broken slide stop the show.
+        if (show != null) {
+            showTimer?.cancel()
+            showTimer = scope.launch(Dispatchers.Main) {
+                delay(1_500)
+                advance()
+            }
+        }
     }
 
     // --- State --------------------------------------------------------------------------------
@@ -412,7 +511,7 @@ class PlayerEngine(
             d is Display.Failed -> Status.ERROR
             d.item?.id != item.id -> Status.LOADING
             d is Display.External -> Status.EXTERNAL
-            d is Display.Still -> Status.PLAYING
+            d is Display.Still -> if (stillPaused) Status.PAUSED else Status.PLAYING
             else -> when (active.playbackState) {
                 Player.STATE_ENDED -> Status.ENDED
                 Player.STATE_BUFFERING -> if (active.playWhenReady) Status.LOADING else Status.PAUSED
@@ -431,6 +530,7 @@ class PlayerEngine(
             pageCount = if (item?.type == ContentType.PDF) item.pageCount else 0,
             manifestVersion = library.manifest.value.version,
             locked = locked.value,
+            slideshow = show != null,
         )
     }
 

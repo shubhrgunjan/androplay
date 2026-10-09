@@ -12,6 +12,7 @@ import app.androplay.core.BoardSyncState
 import app.androplay.core.Content
 import app.androplay.core.RedisSubscriber
 import app.androplay.core.S3
+import app.androplay.core.Slideshow
 import app.androplay.core.unb64
 import app.androplay.protocol.Command
 import app.androplay.protocol.ContentType
@@ -190,6 +191,43 @@ class AdminRepository(private val app: AndroPlayApp) {
         backend?.let { b -> runCatching { contents.value = b.allContent() } }
     }
 
+    // --- Slideshows --------------------------------------------------------------------------
+
+    val shows = MutableStateFlow<List<Slideshow>>(emptyList())
+
+    suspend fun saveShow(show: Slideshow): Boolean = withContext(Dispatchers.IO) {
+        val b = backend ?: return@withContext false
+        runCatching {
+            val saved = show.copy(updatedAt = System.currentTimeMillis())
+            b.putSlideshow(saved)
+            shows.value = listOf(saved) + shows.value.filterNot { it.id == saved.id }
+        }.isSuccess
+    }
+
+    suspend fun deleteShow(id: String): Boolean = withContext(Dispatchers.IO) {
+        val b = backend ?: return@withContext false
+        runCatching {
+            b.deleteSlideshow(id)
+            shows.value = shows.value.filterNot { it.id == id }
+        }.isSuccess
+    }
+
+    /** Items of [show] that the selected board can play right now, in order. */
+    fun playableHandles(show: Slideshow): List<Int> {
+        val byId = entries.value.associateBy { it.id }
+        return show.items.mapNotNull { id ->
+            byId[id]?.takeIf { it.status == EntryStatus.READY }?.content?.handle
+        }
+    }
+
+    /** Starts [show] on the board. Returns how many items will play (0 = nothing ready). */
+    suspend fun playShow(show: Slideshow, startAt: Int = 0): Int {
+        val handles = playableHandles(show)
+        if (handles.isEmpty()) return 0
+        send(Command.Slideshow(handles, show.imageSeconds, show.loop, startAt.coerceIn(0, handles.size - 1)))
+        return handles.size
+    }
+
     suspend fun delete(c: Content) = withContext(Dispatchers.IO) {
         val b = backend ?: return@withContext false
         runCatching {
@@ -282,6 +320,7 @@ class AdminRepository(private val app: AndroPlayApp) {
             try {
                 var cursor = b.lastEventId()
                 contents.value = b.allContent()
+                shows.value = b.slideshows()
                 var lastRefresh = System.currentTimeMillis()
                 while (io.isActive) {
                     val events = reader.read(cursor)
@@ -293,7 +332,8 @@ class AdminRepository(private val app: AndroPlayApp) {
                             val wait = PROGRESS_THROTTLE_MS - (System.currentTimeMillis() - lastRefresh)
                             if (wait > 0) delay(wait)
                         }
-                        contents.value = b.allContent()
+                        if (events.any { it.op == "show" }) shows.value = b.slideshows()
+                        if (events.any { it.op != "show" }) contents.value = b.allContent()
                         lastRefresh = System.currentTimeMillis()
                     }
                 }

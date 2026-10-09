@@ -17,6 +17,7 @@ import app.androplay.core.BackendConfig
 import app.androplay.core.S3
 import app.androplay.core.Role
 import app.androplay.core.Settings
+import app.androplay.core.Slideshow
 import app.androplay.protocol.Command
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +46,7 @@ class AndroPlayApp : Application() {
     val engine by lazy { PlayerEngine(this, store, scope) } // first touched on the main thread
     val bleStatus = MutableStateFlow(BleStatus())
     val syncStatus = MutableStateFlow(SyncStatus())
+    val boardShows = MutableStateFlow<List<Slideshow>>(emptyList())
     val perf by lazy { PerformanceGuard(this) }
     val screenKeeper by lazy { ScreenKeeper(this) }
     @Volatile var sync: BoardSync? = null

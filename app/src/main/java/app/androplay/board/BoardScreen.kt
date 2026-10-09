@@ -210,6 +210,23 @@ private fun LibraryPanel(app: AndroPlayApp, onImport: (() -> Unit)?) {
                 if (n > 0) FilterChip(selected = filter == t, onClick = { filter = t }, label = { Text("${t.folder} $n") })
             }
         }
+        val shows by app.boardShows.collectAsState()
+        if (shows.isNotEmpty()) {
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Slideshows", color = Color.White.copy(alpha = 0.7f), fontSize = 16.sp)
+                shows.forEach { show ->
+                    val handles = show.items.mapNotNull { app.store.item(it)?.handle }
+                    Button(
+                        enabled = handles.isNotEmpty(),
+                        onClick = { app.dispatch(Command.Slideshow(handles, show.imageSeconds, show.loop)) },
+                    ) { Text("▶ ${show.name} (${handles.size})") }
+                }
+            }
+        }
         if (items.isEmpty()) {
             Text(
                 "Nothing here yet. Upload from the AndroPlay admin app, or put files in the board's Movies, Pictures, Music, Documents or Download folders.",
