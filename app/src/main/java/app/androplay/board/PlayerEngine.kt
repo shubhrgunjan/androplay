@@ -10,6 +10,7 @@ import android.graphics.pdf.PdfRenderer
 import android.media.AudioManager
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.util.LruCache
 import android.util.Size
 import androidx.annotation.OptIn
@@ -155,7 +156,8 @@ class PlayerEngine(
         scope.launch(Dispatchers.Main) {
             while (true) {
                 publish()
-                delay(if (active.isPlaying) 500 else 1500)
+                // Fast ticks while anything moves, so phones' sliders advance smoothly.
+                delay(if (active.isPlaying || stillRunning()) 500 else 1500)
             }
         }
     }
@@ -174,20 +176,31 @@ class PlayerEngine(
                 endShow()
                 library.byHandle(cmd.handle)?.let { open(it, cmd.start) }
             }
-            Command.Pause -> if (showingStill()) pauseStill() else active.pause()
-            Command.Resume -> if (showingStill()) armShow() else resume()
+            // A lone still has no timeline: play/pause are no-ops (the phone disables them).
+            Command.Pause -> when {
+                showingStill() -> pauseStill()
+                !loneStill() -> active.pause()
+            }
+            Command.Resume -> when {
+                showingStill() -> resumeStill()
+                !loneStill() -> resume()
+            }
             Command.Toggle -> when {
-                showingStill() -> if (stillPaused) armShow() else pauseStill()
+                showingStill() -> if (stillPaused) resumeStill() else pauseStill()
+                loneStill() -> Unit
                 active.isPlaying -> active.pause()
                 else -> resume()
             }
-            is Command.Seek -> seekTo(cmd.positionMs.toLong())
-            is Command.SeekBy -> seekTo(active.currentPosition + cmd.deltaMs)
+            is Command.Seek -> if (showingStill()) seekStill(cmd.positionMs.toLong()) else seekTo(cmd.positionMs.toLong())
+            is Command.SeekBy -> if (showingStill()) seekStill(stillPosition() + cmd.deltaMs) else seekTo(active.currentPosition + cmd.deltaMs)
             is Command.Volume -> setVolume(cmd.percent)
             Command.ToggleMute -> audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_TOGGLE_MUTE, 0)
             Command.Next -> if (show != null) showStep(+1, auto = false) else step(+1)
             Command.Prev -> if (show != null) showStep(-1, auto = false) else step(-1)
-            is Command.GoToPage -> current?.takeIf { it.type == ContentType.PDF }?.let { showPage(it, cmd.page) }
+            is Command.GoToPage -> current?.takeIf { it.type == ContentType.PDF }?.let {
+                showPage(it, cmd.page)
+                if (show != null) armShow() // new page gets its full time
+            }
             Command.Stop -> {
                 endShow()
                 stop()
@@ -293,6 +306,11 @@ class PlayerEngine(
     private var showTimer: Job? = null
     private var stillPaused = false
 
+    // Slideshow still timeline: time shown so far = stillElapsed + (now - stillStartedAt) while running.
+    // stillStartedAt is 0 whenever the timer isn't running (paused, media slide, no show).
+    private var stillStartedAt = 0L
+    private var stillElapsed = 0L
+
     private fun startShow(cmd: Command.Slideshow) {
         // Documents open in other apps and can't be timed, so they're skipped.
         val keep = cmd.handles.indices.filter { i ->
@@ -310,13 +328,38 @@ class PlayerEngine(
         show = null
         showTimer?.cancel()
         stillPaused = false
+        stillStartedAt = 0
+        stillElapsed = 0
     }
 
     private fun showingStill() = show != null && (current?.type == ContentType.IMAGE || current?.type == ContentType.PDF)
 
+    private fun loneStill() = show == null && (current?.type == ContentType.IMAGE || current?.type == ContentType.PDF)
+
+    private fun stillRunning() = show != null && stillStartedAt > 0
+
+    private fun slideMs(): Long = show?.let { it.seconds.getOrElse(it.index) { 8 } * 1000L } ?: 0
+
+    private fun stillPosition(): Long {
+        val running = if (stillStartedAt > 0) SystemClock.elapsedRealtime() - stillStartedAt else 0
+        return (stillElapsed + running).coerceIn(0, slideMs())
+    }
+
     private fun pauseStill() {
+        if (stillPaused) return
+        stillElapsed = stillPosition()
+        stillStartedAt = 0
         showTimer?.cancel()
         stillPaused = true
+    }
+
+    private fun resumeStill() {
+        if (stillPaused) armShow(stillElapsed)
+    }
+
+    private fun seekStill(ms: Long) {
+        val target = ms.coerceIn(0, slideMs())
+        if (stillPaused) stillElapsed = target else armShow(target)
     }
 
     private fun showSlide(s: Show, index: Int, lastPage: Boolean) {
@@ -327,17 +370,21 @@ class PlayerEngine(
         armShow()
     }
 
-    /** Images and PDF pages advance on their own timer; media advances when it ends (see listener). */
-    private fun armShow() {
+    /**
+     * Images and PDF pages advance on their own timer; media advances when it ends (see listener).
+     * [elapsed] > 0 resumes mid-slide, so only the remaining time is waited.
+     */
+    private fun armShow(elapsed: Long = 0) {
         showTimer?.cancel()
         stillPaused = false
-        val s = show ?: return
-        if (showingStill()) {
-            val ms = s.seconds.getOrElse(s.index) { 8 } * 1000L
-            showTimer = scope.launch(Dispatchers.Main) {
-                delay(ms)
-                advance()
-            }
+        stillStartedAt = 0
+        stillElapsed = elapsed
+        if (show == null || !showingStill()) return
+        val remaining = (slideMs() - elapsed).coerceAtLeast(0)
+        stillStartedAt = SystemClock.elapsedRealtime()
+        showTimer = scope.launch(Dispatchers.Main) {
+            delay(remaining)
+            advance()
         }
     }
 
@@ -517,6 +564,7 @@ class PlayerEngine(
         // Never let one broken slide stop the show.
         if (show != null) {
             showTimer?.cancel()
+            stillStartedAt = 0
             showTimer = scope.launch(Dispatchers.Main) {
                 delay(1_500)
                 advance()
@@ -530,6 +578,7 @@ class PlayerEngine(
         val item = current
         val d = _display.value
         val media = d is Display.Video || d is Display.Audio
+        val timedStill = d is Display.Still && showingStill()
         val status = when {
             item == null -> Status.IDLE
             d is Display.Failed -> Status.ERROR
@@ -546,8 +595,16 @@ class PlayerEngine(
         _state.value = PlaybackState(
             status = status,
             handle = item?.handle ?: PlaybackState.NO_HANDLE,
-            positionMs = if (media) active.currentPosition.coerceAtLeast(0) else 0,
-            durationMs = if (media) active.duration.takeIf { it != C.TIME_UNSET }?.coerceAtLeast(0) ?: item?.durationMs ?: 0 else 0,
+            positionMs = when {
+                media -> active.currentPosition.coerceAtLeast(0)
+                timedStill -> stillPosition()
+                else -> 0
+            },
+            durationMs = when {
+                media -> active.duration.takeIf { it != C.TIME_UNSET }?.coerceAtLeast(0) ?: item?.durationMs ?: 0
+                timedStill -> slideMs()
+                else -> 0
+            },
             volume = if (max > 0) audio.getStreamVolume(AudioManager.STREAM_MUSIC) * 100 / max else 0,
             muted = audio.isStreamMute(AudioManager.STREAM_MUSIC),
             page = if (item?.type == ContentType.PDF) page else 0,

@@ -1,6 +1,7 @@
 package app.androplay.admin
 
 import android.os.SystemClock
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.GraphicEq
@@ -64,6 +66,7 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Slideshow
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
@@ -71,6 +74,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -86,6 +90,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -111,6 +116,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -121,7 +128,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -136,6 +145,7 @@ import app.androplay.ui.AndroPlayTheme
 import app.androplay.ui.Brand
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyGridState
@@ -162,6 +172,7 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSettings: (
     val shows by repo.shows.collectAsState()
     val locked = state?.locked == true
     var confirmDelete by remember { mutableStateOf<Entry?>(null) }
+    var renaming by remember { mutableStateOf<Entry?>(null) }
     var lastQueue by remember { mutableStateOf<List<Int>>(emptyList()) }
     var tab by remember { mutableIntStateOf(0) } // 0 = Library, 1 = Slideshows
     var editing by remember { mutableStateOf<Slideshow?>(null) }
@@ -194,7 +205,7 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSettings: (
                         board = board,
                         connected = connected,
                         error = error,
-                        viaBluetooth = bleStatus == BleLink.Status.READY,
+                        linked = bleStatus == BleLink.Status.READY,
                         locked = locked,
                     )
                 },
@@ -271,12 +282,15 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSettings: (
                     onAdd = onAdd,
                     onPlay = ::play,
                     onDelete = { confirmDelete = it },
+                    onRename = { renaming = it },
                 )
             }
         }
     }
 
     editing?.let { show -> SlideshowEditor(repo, entries, show, onDismiss = { editing = null }) }
+
+    renaming?.let { e -> e.content?.let { c -> RenameDialog(repo, c, onDismiss = { renaming = null }) } }
 
     confirmDelete?.let { e ->
         AlertDialog(
@@ -304,17 +318,16 @@ private fun BoardPill(
     board: app.androplay.core.BoardInfo?,
     connected: Boolean,
     error: String?,
-    viaBluetooth: Boolean,
+    /** A direct in-room link is up (silent fast path; never shown by name). */
+    linked: Boolean,
     locked: Boolean,
 ) {
     var open by remember { mutableStateOf(false) }
-    val online = board != null && (board.online || viaBluetooth)
+    val online = board != null && ((connected && board.online) || linked)
     val subtitle = when {
         board == null && boards.isEmpty() -> if (connected) "No boards yet" else "Offline"
         board == null -> "Tap to choose a board"
-        viaBluetooth -> "Bluetooth"
-        !connected -> "Offline"
-        board.online -> "Cloud"
+        online -> "Connected"
         else -> "Offline"
     } + if (board != null && locked) " · Screen locked" else ""
 
@@ -385,6 +398,81 @@ private fun BoardPill(
     }
 }
 
+// ---------------------------------------------------------------- rename
+
+@Composable
+private fun RenameDialog(repo: AdminRepository, c: app.androplay.core.Content, onDismiss: () -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val ext = remember(c.name) { AdminRepository.extensionOf(c.name) }
+    var field by remember(c.id) {
+        mutableStateOf(TextFieldValue(c.name, selection = TextRange(0, c.name.length - ext.length)))
+    }
+    var saving by remember { mutableStateOf(false) }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+
+    val trimmed = field.text.trim()
+    val finalName = AdminRepository.withExtension(trimmed, c.name)
+    val valid = trimmed.isNotEmpty() && trimmed != ext
+    val changed = finalName != c.name
+
+    fun save() {
+        if (!valid || saving) return
+        if (!changed) return onDismiss()
+        saving = true
+        scope.launch {
+            val ok = repo.rename(c, trimmed)
+            saving = false
+            if (ok) onDismiss() else Toast.makeText(ctx, "Couldn't rename: check the connection", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!saving) onDismiss() },
+        icon = { Icon(Icons.Default.Edit, null) },
+        title = { Text("Rename") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = field,
+                    onValueChange = { field = it },
+                    singleLine = true,
+                    enabled = !saving,
+                    isError = !valid,
+                    label = { Text("Name") },
+                    leadingIcon = { Icon(typeIcon(c.type), null) },
+                    supportingText = {
+                        Text(
+                            when {
+                                !valid -> "Name can't be empty"
+                                ext.isNotEmpty() && !trimmed.endsWith(ext, ignoreCase = true) -> "Saved as $finalName"
+                                else -> "Updates on every board and phone"
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { save() }),
+                    modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = ::save, enabled = valid && !saving) {
+                if (saving) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text("Save")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !saving) { Text("Cancel") } },
+    )
+}
+
 // ---------------------------------------------------------------- library
 
 @Composable
@@ -397,6 +485,7 @@ private fun LibraryPane(
     onAdd: () -> Unit,
     onPlay: (Entry, List<Entry>) -> Unit,
     onDelete: (Entry) -> Unit,
+    onRename: (Entry) -> Unit,
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -538,6 +627,12 @@ private fun LibraryPane(
                                     )
                                 }
                                 if (e.content != null) {
+                                    DropdownMenuItem(
+                                        text = { Text("Rename") },
+                                        leadingIcon = { Icon(Icons.Default.Edit, null) },
+                                        onClick = { onRename(e); menuFor = null },
+                                    )
+                                    HorizontalDivider()
                                     DropdownMenuItem(
                                         text = { Text("Delete everywhere", color = MaterialTheme.colorScheme.error) },
                                         leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
@@ -842,7 +937,42 @@ private fun NowPlayingCard(repo: AdminRepository, state: PlaybackState?, entries
     val s = state ?: PlaybackState()
     val current = entries.firstOrNull { it.content?.handle == s.handle }
     val media = current?.type == ContentType.VIDEO || current?.type == ContentType.AUDIO
+    val still = current?.type == ContentType.IMAGE || current?.type == ContentType.PDF
+    // Something on screen can be paused/seeked: media, or a timed slideshow still.
+    val active = s.status == Status.PLAYING || s.status == Status.PAUSED
+    val pausable = (media && (active || s.status == Status.LOADING || s.status == Status.ENDED)) || (s.durationMs > 0 && active)
+    val timed = s.durationMs > 0 && (media || active)
+    val timedStill = timed && !media && (still || s.slideshow)
+    val boardPlaying = s.status == Status.PLAYING
+
+    // Optimistic play/pause: flip the icon on tap, reconcile when the board agrees or after 1.5 s.
+    var optimistic by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(boardPlaying, s.handle) { if (optimistic == boardPlaying) optimistic = null }
+    LaunchedEffect(s.handle) { optimistic = null }
+    LaunchedEffect(optimistic) {
+        if (optimistic != null) {
+            delay(1_500)
+            optimistic = null
+        }
+    }
+    val playing = if (pausable) optimistic ?: boardPlaying else false
+
+    // Smooth position between state updates while playing.
+    var receivedAt by remember { mutableLongStateOf(SystemClock.uptimeMillis()) }
+    var now by remember { mutableLongStateOf(SystemClock.uptimeMillis()) }
+    LaunchedEffect(s) { receivedAt = SystemClock.uptimeMillis(); now = receivedAt }
+    LaunchedEffect(boardPlaying && timed && optimistic != false) {
+        if (boardPlaying && timed && optimistic != false) {
+            while (true) {
+                delay(200)
+                now = SystemClock.uptimeMillis()
+            }
+        }
+    }
+    val livePosition = if (boardPlaying && optimistic != false) (s.positionMs + (now - receivedAt).coerceAtLeast(0)) else s.positionMs
+
     var seeking by remember { mutableStateOf<Float?>(null) }
+    val position = (seeking?.toLong() ?: livePosition).coerceIn(0, s.durationMs.coerceAtLeast(0))
     var volume by remember { mutableFloatStateOf(s.volume.toFloat()) }
     // Last time a volume command went out while dragging; throttles live updates to one per 150 ms.
     val lastVolumeSend = remember { longArrayOf(0L) }
@@ -852,16 +982,19 @@ private fun NowPlayingCard(repo: AdminRepository, state: PlaybackState?, entries
     val statusText = when (s.status) {
         Status.IDLE -> "Ready"
         Status.LOADING -> "Loading…"
-        Status.PLAYING -> "Playing"
-        Status.PAUSED -> "Paused"
+        Status.PLAYING -> when {
+            !pausable && !media -> "On screen"
+            optimistic == false -> "Paused"
+            else -> "Playing"
+        }
+        Status.PAUSED -> if (optimistic == true) "Playing" else "Paused"
         Status.ENDED -> "Ended"
         Status.ERROR -> "Error"
         Status.EXTERNAL -> "Open in another app"
     }
     val subtitle = when {
-        current == null -> "Tap a tile to play it on the board"
-        current.type == ContentType.PDF && s.pageCount > 0 -> "Page ${s.page + 1}/${s.pageCount} · $statusText"
-        media -> "${formatTime(seeking?.toLong() ?: s.positionMs)} / ${formatTime(s.durationMs)} · $statusText"
+        current == null && s.handle == PlaybackState.NO_HANDLE -> "Tap a tile to play it on the board"
+        current?.type == ContentType.PDF && s.pageCount > 0 -> "Page ${s.page + 1}/${s.pageCount} · $statusText"
         else -> statusText
     }
 
@@ -933,15 +1066,15 @@ private fun NowPlayingCard(repo: AdminRepository, state: PlaybackState?, entries
                         )
                     }
                 }
-                Spacer(Modifier.width(8.dp))
-                Slider(
+                if (media) Spacer(Modifier.width(8.dp))
+                if (media) Slider(
                     value = volume,
                     onValueChange = {
                         volume = it
                         draggingVolume = true
-                        val now = SystemClock.uptimeMillis()
-                        if (now - lastVolumeSend[0] >= 150) {
-                            lastVolumeSend[0] = now
+                        val t = SystemClock.uptimeMillis()
+                        if (t - lastVolumeSend[0] >= 150) {
+                            lastVolumeSend[0] = t
                             send(Command.Volume(it.toInt()))
                         }
                     },
@@ -954,17 +1087,63 @@ private fun NowPlayingCard(repo: AdminRepository, state: PlaybackState?, entries
                     modifier = Modifier.width(92.dp).height(36.dp),
                 )
             }
-            if (media && s.durationMs > 0) {
+            if (timedStill) {
+                Spacer(Modifier.height(8.dp))
+                LinearProgressIndicator(
+                    progress = { (position.toFloat() / s.durationMs.coerceAtLeast(1)).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().height(3.dp).clip(CircleShape),
+                )
+                val left = ((s.durationMs - position + 999) / 1000 * 1000).coerceAtLeast(0)
+                Text(
+                    if (playing) "Next slide in ${formatTime(left)}" else "Slide paused · ${formatTime(left)} left",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 4.dp, start = 4.dp),
+                )
+            }
+            if (timed && media) {
                 Slider(
-                    value = (seeking ?: s.positionMs.toFloat()).coerceIn(0f, s.durationMs.toFloat()),
+                    value = position.toFloat(),
                     onValueChange = { seeking = it },
                     onValueChangeFinished = {
-                        seeking?.let { send(Command.Seek(it.toInt())) }
+                        seeking?.let {
+                            send(Command.Seek(it.toInt()))
+                            // Show the new position right away instead of jumping back until the next update.
+                            receivedAt = SystemClock.uptimeMillis()
+                            now = receivedAt
+                        }
                         seeking = null
                     },
                     valueRange = 0f..s.durationMs.toFloat(),
-                    modifier = Modifier.fillMaxWidth().height(32.dp),
+                    modifier = Modifier.fillMaxWidth().height(28.dp),
                 )
+                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val labelStyle = MaterialTheme.typography.labelSmall
+                    if (timedStill) {
+                        val left = ((s.durationMs - position + 999) / 1000 * 1000).coerceAtLeast(0)
+                        Icon(
+                            Icons.Default.Timer,
+                            null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            if (playing) "Next slide in ${formatTime(left)}" else "Slide paused · ${formatTime(left)} left",
+                            style = labelStyle,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.weight(1f),
+                        )
+                    } else {
+                        Spacer(Modifier.weight(1f))
+                    }
+                    Text(
+                        "${formatTime(position)} / ${formatTime(s.durationMs)}",
+                        style = labelStyle,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             } else {
                 Spacer(Modifier.height(6.dp))
             }
@@ -973,23 +1152,38 @@ private fun NowPlayingCard(repo: AdminRepository, state: PlaybackState?, entries
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = { send(Command.Stop) }) { Icon(Icons.Default.Stop, "Stop") }
-                IconButton(onClick = { send(Command.SeekBy(-10_000)) }, enabled = media) { Icon(Icons.Default.Replay10, "Back 10 s") }
-                IconButton(onClick = { send(Command.Prev) }, modifier = Modifier.size(48.dp)) {
+                IconButton(onClick = { optimistic = null; send(Command.Stop) }) { Icon(Icons.Default.Stop, "Stop") }
+                if (media) IconButton(onClick = { send(Command.SeekBy(-10_000)) }, enabled = pausable && timed) { Icon(Icons.Default.Replay10, "Back 10 s") }
+                IconButton(onClick = { optimistic = null; send(Command.Prev) }, modifier = Modifier.size(48.dp)) {
                     Icon(Icons.Default.SkipPrevious, "Previous", Modifier.size(30.dp))
                 }
-                FilledIconButton(onClick = { send(Command.Toggle) }, modifier = Modifier.size(60.dp), shape = CircleShape) {
+                if (pausable) FilledIconButton(
+                    onClick = {
+                        val target = !playing
+                        optimistic = target
+                        send(
+                            when {
+                                !target -> Command.Pause
+                                s.status == Status.PAUSED -> Command.Resume
+                                else -> Command.Toggle
+                            },
+                        )
+                    },
+                    enabled = pausable,
+                    modifier = Modifier.size(60.dp),
+                    shape = CircleShape,
+                ) {
                     Icon(
-                        if (s.status == Status.PLAYING && media) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        "Play/pause",
+                        if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        if (playing) "Pause" else "Play",
                         Modifier.size(32.dp),
                     )
                 }
-                IconButton(onClick = { send(Command.Next) }, modifier = Modifier.size(48.dp)) {
+                IconButton(onClick = { optimistic = null; send(Command.Next) }, modifier = Modifier.size(48.dp)) {
                     Icon(Icons.Default.SkipNext, "Next", Modifier.size(30.dp))
                 }
-                IconButton(onClick = { send(Command.SeekBy(10_000)) }, enabled = media) { Icon(Icons.Default.Forward10, "Forward 10 s") }
-                IconButton(onClick = { send(Command.ToggleMute) }) {
+                if (media) IconButton(onClick = { send(Command.SeekBy(10_000)) }, enabled = pausable && timed) { Icon(Icons.Default.Forward10, "Forward 10 s") }
+                if (media) IconButton(onClick = { send(Command.ToggleMute) }) {
                     Icon(
                         if (s.muted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
                         if (s.muted) "Unmute" else "Mute",

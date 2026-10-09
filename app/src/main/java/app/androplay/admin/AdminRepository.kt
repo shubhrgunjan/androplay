@@ -262,6 +262,23 @@ class AdminRepository(private val app: AndroPlayApp) {
         }.isSuccess
     }
 
+    /**
+     * Renames [c] everywhere. Keeps the original extension when the user leaves it out
+     * ("Intro" for talk.mp4 becomes Intro.mp4). The backend emits an `update` event, so boards
+     * and other phones pick up the new name on their own; the local list updates right away.
+     */
+    suspend fun rename(c: Content, newName: String): Boolean {
+        val name = withExtension(newName.trim().replace('/', '_'), c.name)
+        if (name.isBlank()) return false
+        if (name == c.name) return true
+        val ok = withContext(Dispatchers.IO) {
+            val b = backend ?: return@withContext false
+            runCatching { b.updateContent(c.id, "name" to name) }.isSuccess
+        }
+        if (ok) contents.value = contents.value.map { if (it.id == c.id) it.copy(name = name) else it }
+        return ok
+    }
+
     // --- Uploads -----------------------------------------------------------------------------
 
     fun hasPending() = _uploads.value.values.any { it.state == UploadState.QUEUED || it.state == UploadState.UPLOADING }
@@ -450,7 +467,20 @@ class AdminRepository(private val app: AndroPlayApp) {
         tmp.renameTo(uploadsFile)
     }
 
-    private companion object {
-        const val PROGRESS_THROTTLE_MS = 700L
+    companion object {
+        private const val PROGRESS_THROTTLE_MS = 700L
+
+        /** Extension of [name] including the dot (".mp4"), or "" if it has none. */
+        fun extensionOf(name: String): String {
+            val dot = name.lastIndexOf('.')
+            return if (dot > 0 && dot < name.length - 1 && name.length - dot <= 6) name.substring(dot) else ""
+        }
+
+        /** [input] with [original]'s extension appended if the user omitted it. */
+        fun withExtension(input: String, original: String): String {
+            val ext = extensionOf(original)
+            if (input.isBlank() || ext.isEmpty() || input.endsWith(ext, ignoreCase = true)) return input
+            return input + ext
+        }
     }
 }
