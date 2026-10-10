@@ -99,6 +99,7 @@ androplay.s3Bucket=androplay
 androplay.s3Region=auto
 androplay.s3AccessKey=...
 androplay.s3SecretKey=...
+androplay.s3FallbackBuckets=androplay1,androplay2,androplay3
 ```
 
 ### Admin login

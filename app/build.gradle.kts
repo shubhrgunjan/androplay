@@ -11,7 +11,8 @@ plugins {
 val local = Properties().apply {
     rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
 }
-fun localString(key: String) = "\"" + (local.getProperty(key) ?: "").replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+fun localString(key: String, default: String = "") =
+    "\"" + (local.getProperty(key) ?: default).replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
 android {
     namespace = "app.androplay"
@@ -21,8 +22,8 @@ android {
         applicationId = "app.androplay"
         minSdk = 28
         targetSdk = 34
-        versionCode = 16
-        versionName = "0.8.6"
+        versionCode = 17
+        versionName = "0.8.7"
 
         buildConfigField("String", "DEFAULT_REDIS_URL", localString("androplay.redisUrl"))
         buildConfigField("String", "DEFAULT_S3_ENDPOINT", localString("androplay.s3Endpoint"))
@@ -30,6 +31,11 @@ android {
         buildConfigField("String", "DEFAULT_S3_BUCKET", localString("androplay.s3Bucket"))
         buildConfigField("String", "DEFAULT_S3_ACCESS_KEY", localString("androplay.s3AccessKey"))
         buildConfigField("String", "DEFAULT_S3_SECRET_KEY", localString("androplay.s3SecretKey"))
+        buildConfigField(
+            "String",
+            "DEFAULT_S3_FALLBACK_BUCKETS",
+            localString("androplay.s3FallbackBuckets", "androplay1,androplay2,androplay3"),
+        )
     }
 
     buildTypes {

@@ -23,9 +23,17 @@ data class BackendConfig(
     val bucket: String = "",
     val accessKey: String = "",
     val secretKey: String = "",
+    val fallbackBuckets: List<String> = DEFAULT_FALLBACK_BUCKETS,
 ) {
     val isComplete: Boolean
         get() = listOf(redisUrl, s3Endpoint, bucket, accessKey, secretKey).all { it.isNotBlank() }
+
+    /** Primary bucket first, then fallbacks (skips blanks and duplicates). */
+    fun storageBuckets(): List<String> =
+        (listOf(bucket) + fallbackBuckets.ifEmpty { DEFAULT_FALLBACK_BUCKETS })
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
 
     /** Fixes common paste mistakes: repeated schemes ("https://https://…"), spaces, trailing slashes. */
     fun normalized(): BackendConfig {
@@ -39,6 +47,7 @@ data class BackendConfig(
             s3Region = s3Region.trim().ifEmpty { "auto" },
             accessKey = accessKey.trim(),
             secretKey = secretKey.trim(),
+            fallbackBuckets = fallbackBuckets.map { it.trim() }.filter { it.isNotEmpty() }.distinct(),
         )
     }
 
@@ -50,6 +59,8 @@ data class BackendConfig(
             ProtocolJson.decodeFromString<BackendConfig>(Base64.decode(code.trim(), Base64.URL_SAFE).decodeToString())
         }.getOrNull()
 
+        val DEFAULT_FALLBACK_BUCKETS = listOf("androplay1", "androplay2", "androplay3")
+
         val buildDefault = BackendConfig(
             redisUrl = BuildConfig.DEFAULT_REDIS_URL,
             s3Endpoint = BuildConfig.DEFAULT_S3_ENDPOINT,
@@ -57,6 +68,11 @@ data class BackendConfig(
             bucket = BuildConfig.DEFAULT_S3_BUCKET,
             accessKey = BuildConfig.DEFAULT_S3_ACCESS_KEY,
             secretKey = BuildConfig.DEFAULT_S3_SECRET_KEY,
+            fallbackBuckets = BuildConfig.DEFAULT_S3_FALLBACK_BUCKETS
+                .split(',')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .ifEmpty { DEFAULT_FALLBACK_BUCKETS },
         )
     }
 }
@@ -80,8 +96,10 @@ class Settings(ctx: Context) {
         set(value) = sp.edit().putString("deviceName", value).apply()
 
     var config: BackendConfig
-        get() = sp.getString("config", null)
+        get() = (sp.getString("config", null)
             ?.let { runCatching { ProtocolJson.decodeFromString<BackendConfig>(it) }.getOrNull() }
-            ?: BackendConfig.buildDefault
+            ?: BackendConfig.buildDefault).let { cfg ->
+            if (cfg.fallbackBuckets.isEmpty()) cfg.copy(fallbackBuckets = BackendConfig.DEFAULT_FALLBACK_BUCKETS) else cfg
+        }
         set(value) = sp.edit().putString("config", ProtocolJson.encodeToString(value)).apply()
 }

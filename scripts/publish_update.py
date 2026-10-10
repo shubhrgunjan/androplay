@@ -42,11 +42,36 @@ def version():
     return code, name
 
 
+def buckets(p):
+    out = [p["s3Bucket"]]
+    extra = p.get("s3FallbackBuckets") or "androplay1,androplay2,androplay3"
+    for b in extra.split(","):
+        b = b.strip()
+        if b and b not in out:
+            out.append(b)
+    return out
+
+
 def s3_put(p, key, body, content_type):
+    last = None
+    ok = False
+    for bucket in buckets(p):
+        try:
+            s3_put_to(p, bucket, key, body, content_type)
+            print(f"  uploaded to {bucket}")
+            ok = True
+        except Exception as e:
+            last = e
+            print(f"  {bucket} failed: {e}")
+    if not ok:
+        sys.exit(str(last) if last else "Upload failed on every bucket")
+
+
+def s3_put_to(p, bucket, key, body, content_type):
     endpoint = urllib.parse.urlparse(p["s3Endpoint"])
     host = endpoint.netloc
     region = p.get("s3Region") or "auto"
-    path = "/" + p["s3Bucket"] + "/" + "/".join(urllib.parse.quote(s, safe="-_.~") for s in key.split("/"))
+    path = "/" + bucket + "/" + "/".join(urllib.parse.quote(s, safe="-_.~") for s in key.split("/"))
     now = datetime.datetime.now(datetime.timezone.utc)
     amz_date, day = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
     payload_hash = hashlib.sha256(body).hexdigest()
@@ -75,7 +100,7 @@ def s3_put(p, key, body, content_type):
     r = conn.getresponse()
     text = r.read().decode(errors="replace")
     if r.status >= 300:
-        sys.exit(f"Upload failed: HTTP {r.status} {text[:500]}")
+        raise RuntimeError(f"HTTP {r.status} {text[:500]}")
 
 
 class Redis:

@@ -135,6 +135,7 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
                         reportProgress(backend, u.id, done)
                     }
                     s3.completeMultipart(key, uploadId, parts.map { it.n to it.etag })
+                    s3.mirror(key, u.mime, u.size) { off, len -> read(ch, off, len) }
                 }
             }
         }
