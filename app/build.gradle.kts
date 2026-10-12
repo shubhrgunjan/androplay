@@ -22,8 +22,8 @@ android {
         applicationId = "app.androplay"
         minSdk = 28
         targetSdk = 34
-        versionCode = 17
-        versionName = "0.8.7"
+        versionCode = 18
+        versionName = "0.8.8"
 
         buildConfigField("String", "DEFAULT_REDIS_URL", localString("androplay.redisUrl"))
         buildConfigField("String", "DEFAULT_S3_ENDPOINT", localString("androplay.s3Endpoint"))
@@ -38,10 +38,24 @@ android {
         )
     }
 
+    // Every machine must sign with the lab key, or devices reject the in-app update.
+    // Point androplay.keystore in local.properties at a copy of it (default: ~/.android/debug.keystore).
+    signingConfigs {
+        create("lab") {
+            storeFile = file(local.getProperty("androplay.keystore") ?: "${System.getProperty("user.home")}/.android/debug.keystore")
+            storePassword = local.getProperty("androplay.keystorePassword") ?: "android"
+            keyAlias = local.getProperty("androplay.keyAlias") ?: "androiddebugkey"
+            keyPassword = local.getProperty("androplay.keyPassword") ?: "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("lab")
+        }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("lab")
         }
     }
 

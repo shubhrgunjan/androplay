@@ -127,7 +127,8 @@ scripts/release.sh "What changed"
 - **Phones** show an *Update available* banner with an **Update** button.
 - **Boards** update automatically, but only when nothing is on screen, then restart into the player.
 - One-time per device: allow *Install unknown apps* for AndroPlay. The board's setup banner offers it, or use `adb shell appops set app.androplay REQUEST_INSTALL_PACKAGES allow`. Android asks to confirm the first in-app update; on Android 12+ later updates are silent.
-- Builds must be signed with the same key. Releases are built on the lab Mac, so keep `~/.android/debug.keystore` safe (or move to a dedicated release keystore).
+- Builds must be signed with the lab key (cert SHA-256 `8bf73d57…85ffcd`, originally the lab iMac's `~/.android/debug.keystore`), or devices reject the update. `scripts/release.sh` refuses to publish anything else. Never regenerate or lose this keystore.
+- To build or release from another machine: copy the lab keystore and `local.properties` over securely (not via git), and point `androplay.keystore=/path/to/lab.keystore` at it in `local.properties` (passwords default to `android`; override with `androplay.keystorePassword` / `androplay.keyAlias` / `androplay.keyPassword`). Then `gh auth login` and run `scripts/release.sh`. If a device has a build signed with another key, uninstall it once.
 
 ## Presentation safeguards (board)
 
