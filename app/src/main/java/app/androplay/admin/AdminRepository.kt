@@ -564,7 +564,7 @@ class AdminRepository(private val app: AndroPlayApp) {
                 connected.value = false
                 error.value = e.message ?: e.javaClass.simpleName
             }
-            delay(2_000)
+            delay(10_000) // each pass is ~2 commands per board; live changes arrive as events
         }
     }
 

@@ -293,9 +293,13 @@ class Backend(val config: BackendConfig) : Closeable {
             listOf(
                 arrayOf("SADD", kBoards, info.id),
                 arrayOf("HSET", kBoard(info.id), *info.toHash()),
-                arrayOf("SET", kOnline(info.id), "1", "EX", "15"),
+                arrayOf("SET", kOnline(info.id), "1", "EX", ONLINE_TTL),
             ),
         )
+    }
+
+    fun stillOnline(board: String) {
+        redis.call("SET", kOnline(board), "1", "EX", ONLINE_TTL)
     }
 
     fun boards(): List<BoardInfo> {
@@ -365,14 +369,14 @@ class Backend(val config: BackendConfig) : Closeable {
         (redis.call("GET", kState(board)) as? String)?.let { PlaybackState.decode(it.unb64()) }
 
     /** A dedicated connection for blocking XREAD, so it never stalls normal commands. */
-    fun eventReader() = EventReader(Redis(url, readTimeoutMs = 45_000), kEvents)
+    fun eventReader() = EventReader(Redis(url, readTimeoutMs = 75_000), kEvents)
 
     override fun close() = redis.close()
 
     data class Event(val streamId: String, val op: String, val contentId: String)
 
     class EventReader(private val redis: Redis, private val key: String) : Closeable {
-        fun read(after: String, blockMs: Long = 20_000): List<Event> {
+        fun read(after: String, blockMs: Long = 55_000): List<Event> {
             val reply = redis.call("XREAD", "COUNT", "200", "BLOCK", blockMs.toString(), "STREAMS", key, after) as? List<*>
                 ?: return emptyList()
             val entries = ((reply.firstOrNull() as? List<*>)?.getOrNull(1) as? List<*>).orEmpty()
@@ -390,6 +394,9 @@ class Backend(val config: BackendConfig) : Closeable {
 fun ByteArray.b64(): String = Base64.encodeToString(this, Base64.NO_WRAP)
 
 fun String.unb64(): ByteArray = Base64.decode(this, Base64.NO_WRAP)
+
+/** Seconds a board counts as online after its last heartbeat (sent every minute). */
+private const val ONLINE_TTL = "150"
 
 private fun List<*>.toStringMap(): Map<String, String> {
     val m = HashMap<String, String>(size / 2)

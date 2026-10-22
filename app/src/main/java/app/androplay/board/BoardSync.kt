@@ -85,7 +85,7 @@ class BoardSync(
         scope.launch {
             while (isActive) {
                 autoUpdate()
-                delay(2 * 60_000L) // cheap Redis read; also retries failed updates quickly
+                delay(30 * 60_000L) // backup only: a published release also arrives as an event
             }
         }
     }
@@ -129,22 +129,37 @@ class BoardSync(
         }
     }
 
+    /**
+     * Upstash bills per command, so this is cheap: one SET to stay online, and the full
+     * board info only when it changed (or every [INFO_REFRESH_MS]).
+     */
     private suspend fun heartbeatLoop() {
+        var sent: BoardInfo? = null
+        var sentAt = 0L
         while (scope.isActive) {
             try {
-                backend.heartbeat(
-                    BoardInfo(
-                        id = me,
-                        name = app.settings.deviceName,
-                        model = android.os.Build.MODEL,
-                        ip = NetUtil.localIp(app) ?: "",
-                        freeBytes = store.freeBytes(),
-                        appVersion = BuildConfig.VERSION_NAME,
-                        bleToken = app.settings.bleToken,
-                        update = app.updater.statusText().orEmpty(),
-                        lastSeen = System.currentTimeMillis(),
-                    ),
+                val info = BoardInfo(
+                    id = me,
+                    name = app.settings.deviceName,
+                    model = android.os.Build.MODEL,
+                    ip = NetUtil.localIp(app) ?: "",
+                    freeBytes = store.freeBytes(),
+                    appVersion = BuildConfig.VERSION_NAME,
+                    bleToken = app.settings.bleToken,
+                    update = app.updater.statusText().orEmpty(),
+                    lastSeen = System.currentTimeMillis(),
                 )
+                val now = System.currentTimeMillis()
+                val prev = sent
+                val changed = prev == null || prev.copy(freeBytes = info.freeBytes, lastSeen = info.lastSeen) != info ||
+                    abs(prev.freeBytes - info.freeBytes) > 100L * 1024 * 1024
+                if (changed || now - sentAt > INFO_REFRESH_MS) {
+                    backend.heartbeat(info)
+                    sent = info
+                    sentAt = now
+                } else {
+                    backend.stillOnline(me)
+                }
                 status.value = status.value.copy(connected = true, error = null)
                 app.lan.refreshEndpoint()
             } catch (e: CancellationException) {
@@ -152,7 +167,7 @@ class BoardSync(
             } catch (e: Exception) {
                 status.value = status.value.copy(connected = false, error = e.message ?: e.javaClass.simpleName)
             }
-            delay(5_000)
+            delay(HEARTBEAT_MS)
         }
     }
 
@@ -167,12 +182,14 @@ class BoardSync(
                 var lastFull = System.currentTimeMillis()
                 backoff = 1_000L
                 while (scope.isActive) {
-                    for (e in reader.read(cursor)) {
+                    val events = reader.read(cursor)
+                    for (e in events) {
                         handleEvent(e)
                         cursor = e.streamId
                     }
-                    backend.setCursor(me, cursor)
-                    if (System.currentTimeMillis() - lastFull > 5 * 60_000) {
+                    if (events.isNotEmpty()) backend.setCursor(me, cursor)
+                    // Events carry every change; this full pass (1 + one command per item) is only a safety net.
+                    if (System.currentTimeMillis() - lastFull > 60 * 60_000) {
                         reconcile()
                         lastFull = System.currentTimeMillis()
                     }
@@ -405,7 +422,7 @@ class BoardSync(
                         offset += n
                         yieldToPresentation(n)
                         val now = System.currentTimeMillis()
-                        if (now - lastReport > 700) {
+                        if (now - lastReport > 3_000) {
                             lastReport = now
                             status.value = status.value.copy(downloadProgress = offset / c.size.toFloat())
                             runCatching { backend.setProgress(me, c.id, offset) }
@@ -434,14 +451,21 @@ class BoardSync(
         }
     }
 
-    /** Mirrors playback state to Redis so admins anywhere see it live. */
+    /**
+     * Mirrors playback state to Redis so admins anywhere see it live. Phones extrapolate the
+     * position while playing, so the normal advance of the clock is not sent; only real
+     * changes and seeks are (each costs two Redis commands).
+     */
     private suspend fun publishState() {
         var last: PlaybackState? = null
+        var lastAt = 0L
         app.engine.state.collect { s ->
             val l = last
-            val significant = l == null || l.copy(positionMs = s.positionMs) != s || abs(l.positionMs - s.positionMs) >= 1000
+            val now = System.currentTimeMillis()
+            val expected = if (l?.status == Status.PLAYING) l.positionMs + (now - lastAt) else l?.positionMs ?: 0
+            val significant = l == null || l.copy(positionMs = s.positionMs) != s || abs(expected - s.positionMs) >= 2_000
             if (significant) {
-                runCatching { backend.publishState(me, s) }.onSuccess { last = s }
+                runCatching { backend.publishState(me, s) }.onSuccess { last = s; lastAt = now }
             }
         }
     }
@@ -450,5 +474,7 @@ class BoardSync(
         const val PRESENTING_BYTES_PER_SEC = 6L * 1024 * 1024
         const val TAG = "BoardSync"
         const val STALE_UPLOAD_MS = 10 * 60_000L
+        const val HEARTBEAT_MS = 60_000L
+        const val INFO_REFRESH_MS = 15 * 60_000L
     }
 }
