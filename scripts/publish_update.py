@@ -153,11 +153,23 @@ def main():
     print(f"Uploading v{name} ({code}), {len(data) / 1e6:.1f} MB -> {key}")
     s3_put(p, key, data, "application/vnd.android.package-archive")
 
-    r = Redis(p["redisUrl"])
-    r.call("HSET", f"{prefix}release", "versionCode", code, "versionName", name, "objectKey", key,
-           "sha256", sha, "size", len(data), "notes", args.notes,
-           "publishedAt", int(datetime.datetime.now().timestamp() * 1000))
-    r.call("XADD", f"{prefix}events", "MAXLEN", "~", "10000", "*", "op", "release", "id", code)
+    # Announce on the primary and every fallback, since devices may be on any of them.
+    urls = [p["redisUrl"]] + [u.strip() for u in p.get("redisFallbackUrls", "").split(",") if u.strip()]
+    announced = 0
+    for i, url in enumerate(urls):
+        label = "primary" if i == 0 else f"fallback {i}"
+        try:
+            r = Redis(url)
+            r.call("HSET", f"{prefix}release", "versionCode", code, "versionName", name, "objectKey", key,
+                   "sha256", sha, "size", len(data), "notes", args.notes,
+                   "publishedAt", int(datetime.datetime.now().timestamp() * 1000))
+            r.call("XADD", f"{prefix}events", "MAXLEN", "~", "10000", "*", "op", "release", "id", code)
+            announced += 1
+            print(f"  announced on Redis {label}")
+        except Exception as e:
+            print(f"  Redis {label} failed: {e}")
+    if not announced:
+        sys.exit("Could not announce the release on any Redis")
     print(f"Published v{name}. Devices update within seconds (boards wait until idle).")
 
 

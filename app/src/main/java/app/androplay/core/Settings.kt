@@ -24,6 +24,8 @@ data class BackendConfig(
     val accessKey: String = "",
     val secretKey: String = "",
     val fallbackBuckets: List<String> = DEFAULT_FALLBACK_BUCKETS,
+    /** Tried in order when the primary Redis is down or out of quota. */
+    val fallbackRedisUrls: List<String> = emptyList(),
 ) {
     val isComplete: Boolean
         get() = listOf(redisUrl, s3Endpoint, bucket, accessKey, secretKey).all { it.isNotBlank() }
@@ -48,7 +50,20 @@ data class BackendConfig(
             accessKey = accessKey.trim(),
             secretKey = secretKey.trim(),
             fallbackBuckets = fallbackBuckets.map { it.trim() }.filter { it.isNotEmpty() }.distinct(),
+            fallbackRedisUrls = fallbackRedisUrls.map(RedisUrl::normalize).filter { it.isNotEmpty() }.distinct(),
         )
+    }
+
+    /**
+     * A saved config that points at one of this build's Redis databases (e.g. the old primary)
+     * follows the build's current primary and fallbacks, so retiring a database needs no setup.
+     */
+    fun withBuildRedis(): BackendConfig {
+        val build = buildDefault
+        val known = (listOf(build.redisUrl) + build.fallbackRedisUrls).filter { it.isNotBlank() }.map(::hostOf).toSet()
+        if (build.redisUrl.isBlank() || hostOf(redisUrl) !in known) return this
+        if (redisUrl == build.redisUrl && fallbackRedisUrls == build.fallbackRedisUrls) return this
+        return copy(redisUrl = build.redisUrl, fallbackRedisUrls = build.fallbackRedisUrls)
     }
 
     fun toCode(): String =
@@ -60,6 +75,8 @@ data class BackendConfig(
         }.getOrNull()
 
         val DEFAULT_FALLBACK_BUCKETS = listOf("androplay1", "androplay2", "androplay3")
+
+        private fun hostOf(url: String): String = runCatching { RedisUrl.parse(url).host }.getOrDefault(url)
 
         val buildDefault = BackendConfig(
             redisUrl = BuildConfig.DEFAULT_REDIS_URL,
@@ -73,6 +90,10 @@ data class BackendConfig(
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
                 .ifEmpty { DEFAULT_FALLBACK_BUCKETS },
+            fallbackRedisUrls = BuildConfig.DEFAULT_REDIS_FALLBACK_URLS
+                .split(',')
+                .map { RedisUrl.normalize(it) }
+                .filter { it.isNotEmpty() },
         )
     }
 }
@@ -100,6 +121,6 @@ class Settings(ctx: Context) {
             ?.let { runCatching { ProtocolJson.decodeFromString<BackendConfig>(it) }.getOrNull() }
             ?: BackendConfig.buildDefault).let { cfg ->
             if (cfg.fallbackBuckets.isEmpty()) cfg.copy(fallbackBuckets = BackendConfig.DEFAULT_FALLBACK_BUCKETS) else cfg
-        }
+        }.withBuildRedis()
         set(value) = sp.edit().putString("config", ProtocolJson.encodeToString(value)).apply()
 }

@@ -166,8 +166,8 @@ data class BoardSyncState(val have: Set<String> = emptySet(), val progress: Map<
 
 /** Typed access to the Redis key schema documented in docs/ARCHITECTURE.md. */
 class Backend(val config: BackendConfig) : Closeable {
-    val url: RedisUrl = RedisUrl.parse(config.redisUrl)
-    private val redis = Redis(url)
+    val route: RedisRoute = RedisRoute.of(listOf(config.redisUrl) + config.fallbackRedisUrls)
+    private val redis = Redis(route)
     private val p = config.prefix
 
     private val kContent = "${p}content"
@@ -175,6 +175,7 @@ class Backend(val config: BackendConfig) : Closeable {
     private val kBoards = "${p}boards"
     private val kHandle = "${p}handle"
     private val kShows = "${p}shows"
+    private val kRemoved = "${p}removed"
     private fun kItem(id: String) = "${p}content:$id"
     private fun kBoard(b: String) = "${p}board:$b"
     private fun kOnline(b: String) = "${p}board:$b:online"
@@ -240,8 +241,14 @@ class Backend(val config: BackendConfig) : Closeable {
     }
 
     fun deleteContent(id: String) {
-        redis.pipeline(listOf(arrayOf("DEL", kItem(id)), arrayOf("ZREM", kContent, id), event("remove", id)))
+        redis.pipeline(
+            listOf(arrayOf("DEL", kItem(id)), arrayOf("ZREM", kContent, id), arrayOf("SADD", kRemoved, id), event("remove", id)),
+        )
     }
+
+    /** Content an admin deleted. Anything else a board has but this database lacks is restored. */
+    fun removedIds(): Set<String> =
+        (redis.call("SMEMBERS", kRemoved) as? List<*>)?.filterIsInstance<String>()?.toSet().orEmpty()
 
     // --- App updates ------------------------------------------------------------------------
 
@@ -369,7 +376,7 @@ class Backend(val config: BackendConfig) : Closeable {
         (redis.call("GET", kState(board)) as? String)?.let { PlaybackState.decode(it.unb64()) }
 
     /** A dedicated connection for blocking XREAD, so it never stalls normal commands. */
-    fun eventReader() = EventReader(Redis(url, readTimeoutMs = 75_000), kEvents)
+    fun eventReader() = EventReader(Redis(route, readTimeoutMs = 75_000), kEvents)
 
     override fun close() = redis.close()
 

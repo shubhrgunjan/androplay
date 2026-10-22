@@ -609,7 +609,7 @@ class AdminRepository(private val app: AndroPlayApp) {
         remoteState.value = null
         if (boardId == null) return
         runCatching { remoteState.value = b.state(boardId) }
-        stateSub = RedisSubscriber(b.url, listOf(b.stateChannel(boardId))) { _, payload ->
+        stateSub = RedisSubscriber(b.route, listOf(b.stateChannel(boardId))) { _, payload ->
             PlaybackState.decode(payload.unb64())?.let { remoteState.value = it }
         }.also { it.start() }
     }

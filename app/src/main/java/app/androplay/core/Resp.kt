@@ -25,7 +25,49 @@ import kotlin.math.min
  * don't belong on Android.
  */
 
-class RedisError(message: String) : IOException(message)
+class RedisError(message: String) : IOException(message) {
+    /** The database refuses all work (quota used up, bad credentials): another one may not. */
+    val unusable: Boolean
+        get() = message.orEmpty().let { m ->
+            listOf("max requests limit", "max daily request limit", "NOAUTH", "WRONGPASS", "invalid password")
+                .any { m.contains(it, ignoreCase = true) }
+        }
+}
+
+/**
+ * The primary Redis plus fallbacks, shared by every connection in the process so they all
+ * agree on one database. [failover] moves to the next one; the primary is retried after
+ * [RETRY_PRIMARY_MS].
+ */
+class RedisRoute private constructor(val urls: List<RedisUrl>) {
+    @Volatile private var index = 0
+    @Volatile private var failedAt = 0L
+
+    val current: RedisUrl
+        get() {
+            if (index != 0 && System.currentTimeMillis() - failedAt > RETRY_PRIMARY_MS) index = 0
+            return urls[index]
+        }
+
+    /** Moves on from [from] if it is still the active database. */
+    @Synchronized
+    fun failover(from: RedisUrl) {
+        if (urls.size < 2 || urls[index] != from) return
+        index = (index + 1) % urls.size
+        failedAt = System.currentTimeMillis()
+    }
+
+    companion object {
+        private const val RETRY_PRIMARY_MS = 10 * 60_000L
+        private val shared = HashMap<List<RedisUrl>, RedisRoute>()
+
+        fun of(urls: List<String>): RedisRoute {
+            val parsed = urls.filter { it.isNotBlank() }.map(RedisUrl::parse).distinct()
+            require(parsed.isNotEmpty()) { "No Redis URL configured" }
+            return synchronized(shared) { shared.getOrPut(parsed) { RedisRoute(parsed) } }
+        }
+    }
+}
 
 data class RedisUrl(
     val host: String,
@@ -190,22 +232,32 @@ class RedisConnection(private val url: RedisUrl, readTimeoutMs: Int = 15_000) : 
     }
 }
 
-/** A lazily (re)connecting client. Retries once on network errors, never on Redis errors. */
-class Redis(private val url: RedisUrl, private val readTimeoutMs: Int = 15_000) : Closeable {
+/**
+ * A lazily (re)connecting client. Network errors are retried (moving to a fallback database
+ * after the first), as are errors meaning the database refuses everything. Other Redis errors
+ * are thrown as is.
+ */
+class Redis(private val route: RedisRoute, private val readTimeoutMs: Int = 15_000) : Closeable {
     private var conn: RedisConnection? = null
+    private var connUrl: RedisUrl? = null
 
     @Synchronized
     fun <T> use(block: (RedisConnection) -> T): T {
         var last: IOException? = null
-        repeat(2) {
-            val c = conn ?: RedisConnection(url, readTimeoutMs).also { conn = it }
+        repeat(route.urls.size + 1) { attempt ->
+            val url = route.current
+            if (connUrl != url) close()
             try {
+                val c = conn ?: RedisConnection(url, readTimeoutMs).also { conn = it; connUrl = url }
                 return block(c)
             } catch (e: RedisError) {
-                throw e
+                if (!e.unusable) throw e
+                close()
+                route.failover(url)
+                last = e
             } catch (e: IOException) {
-                c.close()
-                conn = null
+                close()
+                if (attempt > 0) route.failover(url)
                 last = e
             }
         }
@@ -214,18 +266,23 @@ class Redis(private val url: RedisUrl, private val readTimeoutMs: Int = 15_000) 
 
     fun call(vararg args: String): Any? = use { it.call(*args) }
 
-    fun pipeline(commands: List<Array<String>>): List<Any?> = use { it.pipeline(commands) }
+    fun pipeline(commands: List<Array<String>>): List<Any?> = use { c ->
+        c.pipeline(commands).also { replies ->
+            replies.firstOrNull { it is RedisError && it.unusable }?.let { throw it as RedisError }
+        }
+    }
 
     @Synchronized
     override fun close() {
         conn?.close()
         conn = null
+        connUrl = null
     }
 }
 
 /** Long-lived SUBSCRIBE on its own socket and thread, reconnecting with backoff. */
 class RedisSubscriber(
-    private val url: RedisUrl,
+    private val route: RedisRoute,
     private val channels: List<String>,
     private val onMessage: (channel: String, payload: String) -> Unit,
 ) {
@@ -251,6 +308,7 @@ class RedisSubscriber(
     private fun loop() {
         var backoff = 500L
         while (running) {
+            val url = route.current
             try {
                 val c = RedisConnection(url, readTimeoutMs = 45_000)
                 conn = c
@@ -267,7 +325,7 @@ class RedisSubscriber(
                     } catch (_: Exception) {
                     }
                 }
-                while (running) {
+                while (running && route.current == url) {
                     val msg = c.read() as? List<*> ?: continue
                     if (msg.getOrNull(0) == "message") {
                         runCatching { onMessage(msg[1] as String, msg[2] as? String ?: "") }
@@ -276,6 +334,7 @@ class RedisSubscriber(
             } catch (e: Exception) {
                 _connected.value = false
                 conn?.close()
+                if (e is RedisError && e.unusable) route.failover(url)
                 if (running) {
                     try {
                         Thread.sleep(backoff)

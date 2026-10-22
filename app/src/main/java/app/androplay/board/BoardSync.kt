@@ -75,7 +75,7 @@ class BoardSync(
     private val incoming = LinkedHashMap<String, Incoming>()
 
     fun start() {
-        subscriber = RedisSubscriber(backend.url, listOf(backend.commandChannel(me))) { _, payload ->
+        subscriber = RedisSubscriber(backend.route, listOf(backend.commandChannel(me))) { _, payload ->
             Command.decode(payload.unb64())?.let(app::dispatch)
         }.also { it.start() }
         scope.launch { heartbeatLoop() }
@@ -282,12 +282,16 @@ class BoardSync(
             runCatching { registerLocal(file, contents) }.onFailure { Log.w(TAG, "Skip $file", it) }
         }
 
-        // 2. Local entries the backend no longer knows: cached downloads are deleted; board-owned
+        // 2. Local entries the backend no longer knows: downloads an admin deleted go; any other
+        //    download is put back (a new or wiped database must not empty every board); board-owned
         //    files are re-registered (never delete a user's own files because of a backend wipe).
-        for (id in store.ids() - contents.keys) {
+        val unknown = store.ids() - contents.keys
+        val removed = if (unknown.isEmpty()) emptySet() else backend.removedIds()
+        for (id in unknown) {
             val item = store.item(id) ?: continue
             if (item.origin == Origin.UPLOAD) {
-                store.remove(id, deleteFile = true)
+                if (id in removed) store.remove(id, deleteFile = true)
+                else runCatching { restoreUpload(item, contents) }.onFailure { Log.w(TAG, "Restore ${item.name}", it) }
             } else {
                 val file = store.fileOf(id) ?: continue
                 store.remove(id, deleteFile = false)
@@ -341,6 +345,18 @@ class BoardSync(
         }
         val (duration, pages) = store.probe(file, content.type)
         store.put(content.toItem().copy(durationMs = duration, pageCount = pages), file)
+    }
+
+    /** Re-announces an admin upload this board holds; the file itself is still in storage. */
+    private fun restoreUpload(item: Item, contents: MutableMap<String, Content>) {
+        val c = Content(
+            id = item.id, handle = backend.newHandle(), name = item.name, type = item.type, mime = item.mime,
+            size = item.size, ready = true, objectKey = "content/${item.id}", origin = Origin.UPLOAD,
+            addedBy = app.settings.deviceName, addedAt = item.addedAt, durationMs = item.durationMs,
+            pageCount = item.pageCount, hasThumb = true,
+        )
+        backend.putContent(c)
+        contents[c.id] = c
     }
 
     private fun uploadThumb(id: String, file: File, type: ContentType): Boolean = runCatching {
