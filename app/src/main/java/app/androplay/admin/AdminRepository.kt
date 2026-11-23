@@ -298,11 +298,12 @@ class AdminRepository(private val app: AndroPlayApp) {
             return commandResult(cmd, if (request != null) "Applied over Bluetooth" else "Sent over Bluetooth · unconfirmed", true)
         }
         val b = backend ?: return commandResult(cmd, "Board connection unavailable", false)
+        if (!board.online) return commandResult(cmd, "Board is offline here. Check that both devices use the same setup code.", false)
         return withContext(Dispatchers.IO) {
             try {
                 val listening = b.publishCommand(board.id, bytes)
                 if (request == null) {
-                    return@withContext commandResult(cmd, if (listening) "Sent over cloud · unconfirmed" else "Board is not listening", listening)
+                    return@withContext commandResult(cmd, if (listening) "Sent over cloud · unconfirmed" else "Board did not receive the command. Check the board connection.", listening)
                 }
                 for (waitMs in listOf(300L, 700L, 1300L, 2000L)) {
                     delay(waitMs)

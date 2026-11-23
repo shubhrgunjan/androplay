@@ -24,11 +24,10 @@ android {
         applicationId = "app.androplay"
         minSdk = 28
         targetSdk = 34
-        versionCode = 23
-        versionName = "0.9.3"
+        versionCode = 24
+        versionName = "0.9.4"
 
         buildConfigField("String", "DEFAULT_REDIS_URL", localString("androplay.redisUrl"))
-        buildConfigField("String", "DEFAULT_REDIS_FALLBACK_URLS", localString("androplay.redisFallbackUrls"))
         buildConfigField("String", "DEFAULT_S3_ENDPOINT", localString("androplay.s3Endpoint"))
         buildConfigField("String", "DEFAULT_S3_REGION", localString("androplay.s3Region"))
         buildConfigField("String", "DEFAULT_S3_BUCKET", localString("androplay.s3Bucket"))

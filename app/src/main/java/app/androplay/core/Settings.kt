@@ -63,22 +63,6 @@ data class BackendConfig(
         )
     }
 
-    /**
-     * A saved config that points at one of this build's Redis databases (e.g. the old primary)
-     * follows the build's current primary and fallbacks, so retiring a database needs no setup.
-     */
-    fun withBuildRedis(): BackendConfig {
-        val build = buildDefault
-        val known = (listOf(build.redisUrl) + build.fallbackRedisUrls).filter { it.isNotBlank() }.map(::hostOf).toSet()
-        if (build.redisUrl.isBlank() || hostOf(redisUrl) !in known) return this
-        if (redisUrl == build.redisUrl && fallbackRedisUrls == build.fallbackRedisUrls) return this
-        return copy(
-            redisUrl = build.redisUrl,
-            fallbackRedisUrls = build.fallbackRedisUrls,
-            redisRestToken = redisRestToken.takeIf { hostOf(redisUrl) == hostOf(build.redisUrl) }.orEmpty(),
-        )
-    }
-
     fun toCode(): String =
         Base64.encodeToString(ProtocolJson.encodeToString(this).encodeToByteArray(), Base64.NO_WRAP or Base64.URL_SAFE)
 
@@ -86,8 +70,6 @@ data class BackendConfig(
         fun fromCode(code: String): BackendConfig? = runCatching {
             ProtocolJson.decodeFromString<BackendConfig>(Base64.decode(code.trim(), Base64.URL_SAFE).decodeToString())
         }.getOrNull()
-
-        private fun hostOf(url: String): String = runCatching { RedisUrl.parse(url).host }.getOrDefault(url)
 
         val buildDefault = BackendConfig(
             redisUrl = BuildConfig.DEFAULT_REDIS_URL,
@@ -101,10 +83,6 @@ data class BackendConfig(
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
                 .distinct(),
-            fallbackRedisUrls = BuildConfig.DEFAULT_REDIS_FALLBACK_URLS
-                .split(',')
-                .map { RedisUrl.normalize(it) }
-                .filter { it.isNotEmpty() },
         )
     }
 }
@@ -133,6 +111,6 @@ class Settings(ctx: Context) {
     var config: BackendConfig
         get() = (sp.getString("config", null)
             ?.let { runCatching { ProtocolJson.decodeFromString<BackendConfig>(it) }.getOrNull() }
-            ?: BackendConfig.buildDefault).withBuildRedis()
+            ?: BackendConfig.buildDefault)
         set(value) = sp.edit().putString("config", ProtocolJson.encodeToString(value)).apply()
 }

@@ -41,6 +41,7 @@ import app.androplay.board.BoardService
 import app.androplay.core.AdminAuth
 import app.androplay.core.BackendConfig
 import app.androplay.core.Role
+import app.androplay.core.RedisUrl
 import app.androplay.ui.PasswordDialog
 import app.androplay.ui.LogsActivity
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -191,6 +192,13 @@ class MainActivity : ComponentActivity() {
 
                 OutlinedTextField(name, { name = it }, label = { Text("Device name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
 
+                val redisHost = remember(s.config.redisUrl) {
+                    runCatching { RedisUrl.parse(s.config.redisUrl).host }.getOrNull()
+                }
+                Text(
+                    redisHost?.let { "Redis endpoint · $it" } ?: "Redis endpoint · setup code needed",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
                 OutlinedTextField(
                     setupCode, { setupCode = it; setupError = false },
                     label = { Text("Setup code") },
