@@ -5,7 +5,6 @@ import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
 import android.os.Environment
 import android.os.StatFs
-import android.util.AtomicFile
 import app.androplay.protocol.ContentType
 import app.androplay.protocol.Item
 import app.androplay.protocol.Manifest
@@ -35,7 +34,7 @@ class LocalStore(private val ctx: Context) {
     @Serializable
     private data class Index(val version: Long = 0, val entries: List<Entry> = emptyList())
 
-    private val indexFile = AtomicFile(File(ctx.filesDir, "local-index.json"))
+    private val indexFile = File(ctx.filesDir, "local-index.json")
     private val lock = Any()
     private val byId = LinkedHashMap<String, Entry>()
     private val byHandle = HashMap<Int, Entry>()
@@ -151,23 +150,17 @@ class LocalStore(private val ctx: Context) {
     }
 
     private fun save() {
+        val index = synchronized(lock) { Index(version, byId.values.toList()) }
         synchronized(indexFile) {
-            val index = synchronized(lock) { Index(version, byId.values.toList()) }
-            val bytes = ProtocolJson.encodeToString(Index.serializer(), index).encodeToByteArray()
-            val out = indexFile.startWrite()
-            try {
-                out.write(bytes)
-                indexFile.finishWrite(out)
-            } catch (e: Exception) {
-                indexFile.failWrite(out)
-                throw e
-            }
+            val tmp = File(indexFile.path + ".tmp")
+            tmp.writeText(ProtocolJson.encodeToString(Index.serializer(), index))
+            tmp.renameTo(indexFile)
         }
         publish()
     }
 
     private fun load() {
-        val index = runCatching { ProtocolJson.decodeFromString(Index.serializer(), indexFile.readFully().decodeToString()) }.getOrNull() ?: return
+        val index = runCatching { ProtocolJson.decodeFromString(Index.serializer(), indexFile.readText()) }.getOrNull() ?: return
         synchronized(lock) {
             index.entries.forEach { byId[it.item.id] = it }
             reindex()

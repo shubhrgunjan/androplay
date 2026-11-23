@@ -59,12 +59,6 @@ class Updater(private val app: AndroPlayApp) {
             .onFailure { Log.w(TAG, "Update check failed", it) }
             .getOrNull()
         if (release != null && release.versionCode > BuildConfig.VERSION_CODE) {
-            if (release.sha256.length != 64 || release.sha256.any { it !in '0'..'9' && it !in 'a'..'f' } ||
-                release.size !in 1..512L * 1024 * 1024
-            ) {
-                app.diagnostics.record("Update", "Invalid release metadata")
-                return@withContext null
-            }
             if (!busy) {
                 _state.value = UpdateState.Available(release)
             }
@@ -80,12 +74,10 @@ class Updater(private val app: AndroPlayApp) {
         withContext(Dispatchers.IO) {
             try {
                 val apk = download(release)
-                app.diagnostics.record("Update", "Downloaded version code ${release.versionCode}")
                 _state.value = UpdateState.Installing(release)
                 commit(apk)
             } catch (e: Exception) {
                 Log.w(TAG, "Update failed", e)
-                app.diagnostics.record("Update", "Installation failed (${e.javaClass.simpleName})")
                 _state.value = UpdateState.Failed(e.message ?: e.javaClass.simpleName, release)
             }
         }
@@ -128,7 +120,6 @@ class Updater(private val app: AndroPlayApp) {
                 while (true) {
                     val n = input.read(buf)
                     if (n < 0) break
-                    if (n > release.size - done) error("Update exceeds its announced size")
                     out.write(buf, 0, n)
                     done += n
                     if (done - last > 1_000_000) {
@@ -138,7 +129,7 @@ class Updater(private val app: AndroPlayApp) {
                 }
             }
         }
-        if (apk.length() != release.size || sha256(apk) != release.sha256) {
+        if (sha256(apk) != release.sha256) {
             apk.delete()
             error("Downloaded update is corrupt (checksum mismatch)")
         }

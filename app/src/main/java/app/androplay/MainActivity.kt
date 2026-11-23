@@ -29,7 +29,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,18 +40,11 @@ import app.androplay.board.BoardService
 import app.androplay.core.AdminAuth
 import app.androplay.core.BackendConfig
 import app.androplay.core.Role
-import app.androplay.core.RedisUrl
 import app.androplay.ui.PasswordDialog
-import app.androplay.ui.LogsActivity
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.ui.text.input.KeyboardType
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * Entry point: routes to the Board or Admin UI, or shows first-run setup (role).
+ * Provision headlessly with: adb shell am start -n app.androplay/.MainActivity --es config <setup code> --es role BOARD
  */
 class MainActivity : ComponentActivity() {
     companion object {
@@ -64,12 +56,16 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val s = app.settings
+        intent.getStringExtra("config")?.let { BackendConfig.fromCode(it) }?.let { s.config = it }
+        intent.getStringExtra("role")?.let { r -> runCatching { Role.valueOf(r.uppercase()) }.getOrNull() }?.let { s.role = it }
+
         val role = s.role
-        if (!intent.getBooleanExtra(EXTRA_EDIT, false) && role != null) {
+        if (!intent.getBooleanExtra(EXTRA_EDIT, false) && role != null && s.config.isComplete) {
             route(role)
             return
         }
-        val needsAuth = role != null && !AdminAuth.isLoggedIn(this)
+        // Boards never see a login. Only an admin phone that isn't logged in must log in to change settings.
+        val needsAuth = role == Role.ADMIN && !AdminAuth.isLoggedIn(this)
         enableEdgeToEdge()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
@@ -117,45 +113,11 @@ class MainActivity : ComponentActivity() {
     private fun SetupScreen(onSave: (Role, String, BackendConfig) -> Unit) {
         val s = app.settings
         var name by remember { mutableStateOf(s.deviceName) }
-        var setupCode by remember { mutableStateOf("") }
-        var setupError by remember { mutableStateOf(false) }
-        var editRestToken by remember { mutableStateOf(false) }
-        var restToken by remember { mutableStateOf("") }
+        val cfg = if (s.config.isComplete) s.config.normalized() else BackendConfig.buildDefault.normalized()
         val detectedBoard = looksLikeBoard()
-        val scope = rememberCoroutineScope()
-        var changeCredentials by remember { mutableStateOf(s.role == null) }
-        var username by remember { mutableStateOf("") }
-        var password by remember { mutableStateOf("") }
-        var credentialError by remember { mutableStateOf<String?>(null) }
-        var saving by remember { mutableStateOf(false) }
 
         fun choose(r: Role) {
-            val chosen = if (setupCode.isBlank()) s.config else BackendConfig.fromCode(setupCode)
-            val cfg = chosen?.let { if (editRestToken) it.copy(redisRestToken = restToken) else it }?.normalized()
-            if (cfg == null || ((setupCode.isNotBlank() || editRestToken) && !cfg.isSecure)) {
-                setupError = true
-                return
-            }
-            if (!changeCredentials) {
-                onSave(r, name.trim().ifEmpty { s.deviceName }, cfg)
-                return
-            }
-            if (username.isBlank() || ':' in username || password.length < AdminAuth.MIN_PASSWORD_LENGTH) {
-                credentialError = "Enter a username and a password with at least ${AdminAuth.MIN_PASSWORD_LENGTH} characters."
-                return
-            }
-            if (saving) return
-            saving = true
-            val newUsername = username
-            val newPassword = password
-            scope.launch {
-                val saved = withContext(Dispatchers.IO) {
-                    runCatching { AdminAuth.setCredentials(this@MainActivity, newUsername, newPassword) }.getOrDefault(false)
-                }
-                saving = false
-                if (saved) onSave(r, name.trim().ifEmpty { s.deviceName }, cfg)
-                else credentialError = "Could not save credentials."
-            }
+            onSave(r, name.trim().ifEmpty { s.deviceName }, cfg)
         }
 
         Column(
@@ -192,56 +154,6 @@ class MainActivity : ComponentActivity() {
 
                 OutlinedTextField(name, { name = it }, label = { Text("Device name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
 
-                val redisHost = remember(s.config.redisUrl) {
-                    runCatching { RedisUrl.parse(s.config.redisUrl).host }.getOrNull()
-                }
-                Text(
-                    redisHost?.let { "Redis endpoint · $it" } ?: "Redis endpoint · setup code needed",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                OutlinedTextField(
-                    setupCode, { setupCode = it; setupError = false },
-                    label = { Text("Setup code") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    isError = setupError,
-                    supportingText = { if (setupError) Text("Use a valid TLS setup code. An HTTPS fallback token requires an Upstash Redis endpoint.") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                if (editRestToken) {
-                    OutlinedTextField(
-                        restToken, { restToken = it; setupError = false },
-                        label = { Text("Upstash REST token") },
-                        supportingText = { Text("Use a token for the same database. Leave blank to disable HTTPS fallback.") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        singleLine = true, modifier = Modifier.fillMaxWidth(),
-                    )
-                } else {
-                    TextButton(onClick = { editRestToken = true }) { Text("Configure Redis HTTPS fallback") }
-                }
-                if (changeCredentials) {
-                    OutlinedTextField(
-                        username, { username = it; credentialError = null },
-                        label = { Text("Admin username") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                    )
-                    OutlinedTextField(
-                        password, { password = it; credentialError = null },
-                        label = { Text("New admin password") }, singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    credentialError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                } else if (s.role != null) {
-                    TextButton(onClick = { changeCredentials = true }) { Text("Change admin credentials") }
-                }
-                if (s.role != null) {
-                    OutlinedButton(
-                        onClick = { startActivity(Intent(this@MainActivity, LogsActivity::class.java)) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Activity logs") }
-                }
                 if (s.role == Role.ADMIN && AdminAuth.isLoggedIn(this@MainActivity)) {
                     OutlinedButton(onClick = ::logOut, modifier = Modifier.fillMaxWidth()) { Text("Log out") }
                 }

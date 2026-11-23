@@ -92,8 +92,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -182,13 +180,6 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSendLan: (h
     var lanOpen by remember { mutableStateOf(false) }
     val gridState = rememberLazyGridState()
     val lanProgress by repo.lanProgress.collectAsState()
-    val notice by repo.commandNotice.collectAsState()
-    val snackbar = remember { SnackbarHostState() }
-    LaunchedEffect(notice) {
-        val message = notice ?: return@LaunchedEffect
-        snackbar.showSnackbar(message)
-        repo.commandNotice.compareAndSet(message, null)
-    }
 
     val send: (Command) -> Unit = { cmd -> scope.launch { repo.send(cmd) } }
 
@@ -198,7 +189,7 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSendLan: (h
         scope.launch {
             val queue = displayed.mapNotNull { it.content?.takeIf { _ -> it.status == EntryStatus.READY }?.handle }
             if (queue != lastQueue) {
-                if (!repo.send(Command.SetQueue(queue))) return@launch
+                repo.send(Command.SetQueue(queue))
                 lastQueue = queue
             }
             repo.send(Command.Play(c.handle))
@@ -206,7 +197,6 @@ private fun AdminContent(repo: AdminRepository, onAdd: () -> Unit, onSendLan: (h
     }
 
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbar) },
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(

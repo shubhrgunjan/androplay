@@ -7,7 +7,6 @@ import android.net.wifi.WifiManager
 import android.util.Log
 import app.androplay.AndroPlayApp
 import app.androplay.core.Content
-import app.androplay.core.LanTls
 import app.androplay.protocol.ContentType
 import app.androplay.protocol.Fingerprint
 import app.androplay.protocol.Item
@@ -26,13 +25,7 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URLDecoder
-import java.security.MessageDigest
-import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.Semaphore
-import java.util.concurrent.SynchronousQueue
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLServerSocket
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -43,10 +36,7 @@ class LanShareServer(private val app: AndroPlayApp) {
     private val running = AtomicBoolean(false)
     private var server: ServerSocket? = null
     private var accept: Thread? = null
-    private val pool = ThreadPoolExecutor(0, 4, 30, TimeUnit.SECONDS, SynchronousQueue())
-    private val uploadSlot = Semaphore(1)
-    @Volatile var certificatePin: String? = null
-        private set
+    private val pool = Executors.newCachedThreadPool()
     private var nsd: NsdManager? = null
     private var nsdListener: NsdManager.RegistrationListener? = null
     private var multicast: WifiManager.MulticastLock? = null
@@ -57,29 +47,28 @@ class LanShareServer(private val app: AndroPlayApp) {
     fun start() {
         if (!running.compareAndSet(false, true)) return
         try {
-            val tls = LanTls.server()
-            val ss = tls.context.serverSocketFactory.createServerSocket() as SSLServerSocket
-            ss.enabledProtocols = ss.supportedProtocols.filter { it == "TLSv1.2" || it == "TLSv1.3" }.toTypedArray()
+            val ss = ServerSocket()
             ss.reuseAddress = true
             ss.bind(InetSocketAddress(Net.PORT))
             server = ss
-            certificatePin = tls.pin
             accept = Thread({
-                while (running.get() && !ss.isClosed) {
-                    val socket = runCatching { ss.accept() }.getOrNull() ?: break
-                    try {
-                        pool.execute { handle(socket) }
-                    } catch (_: RejectedExecutionException) {
-                        socket.close()
-                    }
+                while (running.get()) {
+                    val socket = runCatching { ss.accept() }.getOrNull() ?: continue
+                    pool.execute { handle(socket) }
                 }
             }, "androplay-lan").also { it.isDaemon = true; it.start() }
+            pool.execute {
+                while (running.get()) {
+                    refreshEndpoint()
+                    Thread.sleep(5_000)
+                }
+            }
             advertise()
             refreshEndpoint()
         } catch (e: Exception) {
             Log.w(TAG, "LAN share listen failed", e)
-            app.diagnostics.record("LAN", "Could not start encrypted sharing")
-            stop()
+            running.set(false)
+            _endpoint.value = null
         }
     }
 
@@ -87,14 +76,13 @@ class LanShareServer(private val app: AndroPlayApp) {
         running.set(false)
         runCatching { server?.close() }
         server = null
-        certificatePin = null
         accept = null
         unadvertise()
         _endpoint.value = null
     }
 
     fun refreshEndpoint() {
-        val ip = if (running.get()) NetUtil.localIp(app) else null
+        val ip = NetUtil.localIp(app)
         _endpoint.value = ip?.let { "$it:${Net.PORT}" }
     }
 
@@ -140,9 +128,7 @@ class LanShareServer(private val app: AndroPlayApp) {
             val output = BufferedOutputStream(socket.getOutputStream())
             val headers = readHeaders(input) ?: return reply(output, 400, "Bad request")
             val token = headers.fields[Net.TOKEN_HEADER.lowercase()]
-            if (token.isNullOrBlank() ||
-                !MessageDigest.isEqual(token.encodeToByteArray(), app.settings.lanToken.encodeToByteArray())
-            ) {
+            if (token.isNullOrBlank() || token != app.settings.bleToken) {
                 return reply(output, 401, "Unauthorized")
             }
             when {
@@ -166,13 +152,8 @@ class LanShareServer(private val app: AndroPlayApp) {
                     val length = headers.fields["content-length"]?.toLongOrNull()
                         ?: return reply(output, 411, "Content-Length required")
                     if (length <= 0L) return reply(output, 400, "Empty file")
-                    if (length > MAX_UPLOAD_BYTES) return reply(output, 413, "File exceeds the LAN upload limit")
-                    if (!uploadSlot.tryAcquire()) return reply(output, 503, "Another LAN upload is in progress")
                     val tmp = File(app.store.incoming, "lan-${System.nanoTime()}")
                     try {
-                        if (length > app.store.freeBytes() - DISK_RESERVE_BYTES) {
-                            return reply(output, 507, "Not enough board storage")
-                        }
                         tmp.outputStream().use { out ->
                             var left = length
                             val buf = ByteArray(256 * 1024)
@@ -184,15 +165,11 @@ class LanShareServer(private val app: AndroPlayApp) {
                             }
                         }
                         val id = ingest(tmp, name)
-                        app.diagnostics.record("LAN", "Received a file")
                         reply(output, 200, """{"ok":true,"id":"$id"}""", "application/json")
                     } catch (e: Exception) {
                         tmp.delete()
                         Log.w(TAG, "LAN receive failed", e)
-                        app.diagnostics.record("LAN", "Transfer failed (${e.javaClass.simpleName})")
-                        reply(output, 500, "Receive failed")
-                    } finally {
-                        uploadSlot.release()
+                        reply(output, 500, e.message ?: "Receive failed")
                     }
                 }
                 else -> reply(output, 404, "Not found")
@@ -204,7 +181,6 @@ class LanShareServer(private val app: AndroPlayApp) {
         }
     }
 
-    @Synchronized
     private fun ingest(tmp: File, rawName: String): String {
         val name = rawName.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "_").trim().ifEmpty { "file" }
         val dest = app.store.destinationFor(name)
@@ -309,8 +285,6 @@ class LanShareServer(private val app: AndroPlayApp) {
     }
 
     companion object {
-        private const val MAX_UPLOAD_BYTES = 8L * 1024 * 1024 * 1024
-        private const val DISK_RESERVE_BYTES = 512L * 1024 * 1024
         private const val TAG = "LanShare"
         private const val CR: Byte = 13
         private const val LF: Byte = 10

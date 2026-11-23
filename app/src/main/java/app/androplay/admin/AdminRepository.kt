@@ -6,8 +6,6 @@ import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import app.androplay.AndroPlayApp
-import app.androplay.protocol.ControlRequest
-import app.androplay.core.LanTls
 import app.androplay.core.Backend
 import app.androplay.core.BoardInfo
 import app.androplay.core.BoardSyncState
@@ -19,7 +17,6 @@ import app.androplay.core.flatten
 import app.androplay.core.playAllSlides
 import app.androplay.core.slideshowCommand
 import app.androplay.core.unb64
-import app.androplay.protocol.encode
 import app.androplay.protocol.Command
 import app.androplay.protocol.ContentType
 import app.androplay.protocol.Fingerprint
@@ -71,7 +68,6 @@ data class Upload(
     val error: String? = null,
     val staged: Boolean = false,
     val uploadId: String? = null,
-    val uploadBucket: String? = null,
     val parts: List<PartTag> = emptyList(),
 )
 
@@ -210,15 +206,17 @@ class AdminRepository(private val app: AndroPlayApp) {
 
     private fun pullThumbLan(id: String): Boolean {
         val host = suggestedLanHost().ifBlank { return false }
-        val (token, pin) = lanCredentials() ?: return false
+        val token = selected.value?.bleToken?.ifBlank { null }
+            ?: prefs.getString("lanToken", null)
+            ?: return false
         val port = prefs.getInt("lanPort", Net.PORT).let { if (it > 0) it else Net.PORT }
         return try {
-            val http = LanTls.client(app.http.newBuilder(), pin)
+            val http = app.http.newBuilder()
                 .connectTimeout(3, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .build()
             val req = okhttp3.Request.Builder()
-                .url("https://$host:$port/lan/thumb/$id")
+                .url("http://$host:$port/lan/thumb/$id")
                 .header(Net.TOKEN_HEADER, token)
                 .get()
                 .build()
@@ -283,46 +281,12 @@ class AdminRepository(private val app: AndroPlayApp) {
         prefs.edit().putString("board", boardId).apply()
     }
 
-    val commandNotice = MutableStateFlow<String?>(null)
-
-    /** A newer board acknowledges execution on either transport. Older boards report delivery only. */
+    /** BLE first (≈10–30 ms in the room), Redis pub/sub otherwise (works from anywhere). */
     suspend fun send(cmd: Command): Boolean {
-        val board = selected.value ?: return commandResult(cmd, "Select a board first", false)
-        val request = if (board.confirmedControl) {
-            val ids = contents.value.associate { it.handle to it.id }
-            ControlRequest.create(cmd, ids::get)
-                ?: return commandResult(cmd, "Content is no longer in the catalog", false)
-        } else null
-        val bytes = request?.encode() ?: cmd.encode()
-        if (ble.send(board.id, bytes, confirmed = request != null)) {
-            return commandResult(cmd, if (request != null) "Applied over Bluetooth" else "Sent over Bluetooth · unconfirmed", true)
-        }
-        val b = backend ?: return commandResult(cmd, "Board connection unavailable", false)
-        if (!board.online) return commandResult(cmd, "Board is offline here. Check that both devices use the same setup code.", false)
-        return withContext(Dispatchers.IO) {
-            try {
-                val listening = b.publishCommand(board.id, bytes)
-                if (request == null) {
-                    return@withContext commandResult(cmd, if (listening) "Sent over cloud · unconfirmed" else "Board did not receive the command. Check the board connection.", listening)
-                }
-                for (waitMs in listOf(300L, 700L, 1300L, 2000L)) {
-                    delay(waitMs)
-                    val outcome = b.commandOutcome(board.id, request.id) ?: continue
-                    return@withContext commandResult(cmd, if (outcome) "Applied over cloud" else "Board rejected command", outcome)
-                }
-                commandResult(cmd, "Board did not confirm the command", false)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                commandResult(cmd, "Cloud delivery could not be confirmed", false)
-            }
-        }
-    }
-
-    private fun commandResult(cmd: Command, message: String, ok: Boolean): Boolean {
-        app.diagnostics.record("Control", "${cmd.javaClass.simpleName} · $message")
-        if (!ok) commandNotice.value = message
-        return ok
+        if (ble.send(cmd)) return true
+        val b = backend ?: return false
+        val board = selectedId.value ?: return false
+        return withContext(Dispatchers.IO) { runCatching { b.publishCommand(board, cmd) }.isSuccess }
     }
 
     suspend fun refresh() = withContext(Dispatchers.IO) {
@@ -447,13 +411,16 @@ class AdminRepository(private val app: AndroPlayApp) {
 
     /** Pushes files straight to the board over the local network. Does not use Redis or S3. */
     suspend fun sendLan(uris: List<Uri>, host: String, port: Int = Net.PORT): LanSendResult = withContext(Dispatchers.IO) {
-        val (token, pin) = lanCredentials()
-            ?: return@withContext LanSendResult(0, 0, "Select an updated board while it is online to enable secure Wi-Fi sharing.")
+        val token = selected.value?.bleToken?.ifBlank { null }
+            ?: prefs.getString("lanToken", null)
+        if (token.isNullOrBlank()) {
+            return@withContext LanSendResult(0, 0, "Select a board first (needed once, so this phone has the share key).")
+        }
         val target = host.trim().trimStart('/').substringAfter("://").substringBefore('/')
         if (target.isBlank()) return@withContext LanSendResult(0, 0, "Enter the board's Wi-Fi address.")
-        prefs.edit().putString("lanHost", target).putInt("lanPort", port).apply()
+        prefs.edit().putString("lanHost", target).putInt("lanPort", port).putString("lanToken", token).apply()
 
-        val http = LanTls.client(app.http.newBuilder(), pin)
+        val http = app.http.newBuilder()
             .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
             .writeTimeout(0, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
@@ -472,9 +439,7 @@ class AdminRepository(private val app: AndroPlayApp) {
             try {
                 putLan(http, target, port, token, u)
                 sent++
-                app.diagnostics.record("LAN", "Sent a file")
             } catch (e: Exception) {
-                app.diagnostics.record("LAN", "Transfer failed (${e.javaClass.simpleName})")
                 lastError = e.message ?: e.javaClass.simpleName
                 lanProgress.value = LanSendProgress(message = lastError)
                 return@withContext LanSendResult(sent, rejected, friendlyLanError(e))
@@ -482,15 +447,6 @@ class AdminRepository(private val app: AndroPlayApp) {
         }
         lanProgress.value = LanSendProgress()
         LanSendResult(sent, rejected, lastError)
-    }
-
-    private fun lanCredentials(): Pair<String, String>? {
-        val id = selectedId.value ?: return null
-        val live = selected.value?.takeIf { it.id == id && it.lanToken.isNotBlank() && it.lanPin.isNotBlank() }
-        val token = live?.lanToken ?: prefs.getString("lanToken:$id", null) ?: return null
-        val pin = live?.lanPin ?: prefs.getString("lanPin:$id", null) ?: return null
-        if (pin.length != 64 || pin.any { it !in '0'..'9' && it !in 'a'..'f' }) return null
-        return token to pin
     }
 
     fun lastLanHost(): String = prefs.getString("lanHost", "")
@@ -508,7 +464,7 @@ class AdminRepository(private val app: AndroPlayApp) {
 
     private fun putLan(http: okhttp3.OkHttpClient, host: String, port: Int, token: String, u: Upload) {
         val encoded = java.net.URLEncoder.encode(u.name, Charsets.UTF_8.name())
-        val url = "https://$host:$port/lan?name=$encoded"
+        val url = "http://$host:$port/lan?name=$encoded"
         val body = object : okhttp3.RequestBody() {
             override fun contentType() = u.mime.toMediaTypeOrNull()
             override fun contentLength() = u.size
@@ -578,7 +534,7 @@ class AdminRepository(private val app: AndroPlayApp) {
 
     suspend fun finished(id: String) {
         val u = _uploads.value[id]
-        update(id) { it.copy(state = UploadState.DONE, uploaded = it.size, error = null, uploadId = null, uploadBucket = null, parts = emptyList()) }
+        update(id) { it.copy(state = UploadState.DONE, uploaded = it.size, error = null, uploadId = null, parts = emptyList()) }
         if (u?.staged == true) Uri.parse(u.uri).path?.let { File(it).delete() }
         refresh()
     }
@@ -595,9 +551,7 @@ class AdminRepository(private val app: AndroPlayApp) {
                 }
                 list.firstOrNull { it.id == selectedId.value }?.let { b ->
                     val edit = prefs.edit()
-                    if (b.lanToken.isNotBlank() && b.lanPin.isNotBlank()) {
-                        edit.putString("lanToken:${b.id}", b.lanToken).putString("lanPin:${b.id}", b.lanPin)
-                    }
+                    if (b.bleToken.isNotBlank()) edit.putString("lanToken", b.bleToken)
                     if (b.ip.isNotBlank()) edit.putString("lanHost", b.ip)
                     edit.apply()
                 }
@@ -642,7 +596,6 @@ class AdminRepository(private val app: AndroPlayApp) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                app.diagnostics.record("Sync", "Admin catalog connection failed (${e.javaClass.simpleName})")
                 delay(3_000)
             } finally {
                 reader.close()

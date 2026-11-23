@@ -24,7 +24,6 @@ import app.androplay.core.Content
 import app.androplay.core.RedisError
 import app.androplay.core.S3
 import app.androplay.protocol.ContentType
-import app.androplay.protocol.Fingerprint
 import app.androplay.protocol.Origin
 import kotlinx.coroutines.CancellationException
 import java.io.ByteArrayOutputStream
@@ -70,7 +69,6 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
                 } catch (e: SecurityException) {
                     repo.update(u.id) { it.copy(state = UploadState.FAILED, error = "Lost permission to read this file") }
                 } catch (e: S3.S3Error) {
-                    app.diagnostics.record("Upload", "Storage response ${e.code}")
                     if (e.code in 400..499 && e.code != 404 && e.code != 408 && e.code != 429) {
                         repo.update(u.id) { it.copy(state = UploadState.FAILED, error = "Storage rejected upload (${e.code})") }
                     } else {
@@ -107,23 +105,17 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
         }
         val key = "content/${u.id}"
         val uri = Uri.parse(u.uri)
-        val sha256 = applicationContext.openOriginal(uri).use { pfd ->
+        applicationContext.openOriginal(uri).use { pfd ->
             FileInputStream(pfd.fileDescriptor).channel.use { ch ->
                 if (u.size <= PART) {
                     reportProgress(backend, u.id, 0)
                     s3.putObject(key, read(ch, 0, u.size.toInt()), u.mime)
                     reportProgress(backend, u.id, u.size)
                 } else {
-                    val savedBucket = u.uploadBucket
-                    val savedId = u.uploadId
-                    val upload = if (savedBucket != null && savedId != null && s3.hasBucket(savedBucket)) {
-                        S3.Multipart(savedBucket, savedId)
-                    } else {
-                        s3.createMultipart(key, u.mime).also { fresh ->
-                            u = u.copy(uploadId = fresh.id, uploadBucket = fresh.bucket, parts = emptyList())
-                            repo.update(u.id) { it.copy(uploadId = fresh.id, uploadBucket = fresh.bucket, parts = emptyList()) }
-                        }
+                    val uploadId = u.uploadId ?: s3.createMultipart(key, u.mime).also { id ->
+                        repo.update(u.id) { it.copy(uploadId = id, parts = emptyList()) }
                     }
+                    u = u.copy(uploadId = uploadId)
                     val total = ((u.size + PART - 1) / PART).toInt()
                     val parts = u.parts.toMutableList()
                     reportProgress(backend, u.id, min(parts.size.toLong() * PART, u.size))
@@ -131,9 +123,9 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
                         val offset = (n - 1).toLong() * PART
                         val bytes = read(ch, offset, min(PART.toLong(), u.size - offset).toInt())
                         val etag = try {
-                            s3.uploadPart(key, upload, n, bytes)
+                            s3.uploadPart(key, uploadId, n, bytes)
                         } catch (e: S3.S3Error) {
-                            if (e.code == 404) repo.update(u.id) { it.copy(uploadId = null, uploadBucket = null, parts = emptyList(), uploaded = 0) }
+                            if (e.code == 404) repo.update(u.id) { it.copy(uploadId = null, parts = emptyList(), uploaded = 0) }
                             throw e // expired multipart upload: next attempt starts fresh
                         }
                         parts += PartTag(n, etag)
@@ -142,23 +134,16 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
                         setProgress(u.name, done, u.size)
                         reportProgress(backend, u.id, done)
                     }
-                    try {
-                        s3.completeMultipart(key, upload, parts.map { it.n to it.etag })
-                    } catch (e: S3.S3Error) {
-                        if (e.code == 404) repo.update(u.id) { it.copy(uploadId = null, uploadBucket = null, parts = emptyList(), uploaded = 0) }
-                        throw e
-                    }
-                    s3.mirror(key, upload, u.mime, u.size) { off, len -> read(ch, off, len) }
+                    s3.completeMultipart(key, uploadId, parts.map { it.n to it.etag })
+                    s3.mirror(key, u.mime, u.size) { off, len -> read(ch, off, len) }
                 }
-                Fingerprint.sha256(ch, u.size)
             }
         }
         val thumb = runCatching { thumbnail(uri, u.type) }.getOrNull()?.let { jpeg ->
             app.admin.saveThumb(u.id, jpeg)
             runCatching { s3.putObject("thumbs/${u.id}.jpg", jpeg, "image/jpeg") }.isSuccess
         } ?: false
-        backend.markReady(u.id, key, thumb, sha256)
-        app.diagnostics.record("Upload", "Content ready")
+        backend.markReady(u.id, key, thumb)
         repo.finished(u.id)
     }
 

@@ -18,6 +18,10 @@ One Android app, two roles:
 
 **Why it's fast:** the board always plays from **local storage** (content is pre-synced), keeps the **next item preloaded** in a standby player, and receives commands over **Redis pub/sub** (~20–60 ms, works from anywhere) or **BLE** (~10–30 ms, works without Wi-Fi).
 
+## Recovery release
+
+Version 0.9.5 restores the pre-configuration-change v0.9.1 app with a higher Android version code. The private recovery APK retains the original lab backend migration behavior and the remote-button repeat fix.
+
 ## Features
 
 - One APK, role picked on first launch (Board / Admin)
@@ -82,13 +86,15 @@ adb shell appops set $PKG WRITE_SETTINGS allow
 adb shell pm enable $PKG/.KioskLauncher
 ```
 
-Open AndroPlay, choose the role, and paste a setup code supplied privately by your deployment administrator. To change an existing device, open **Settings**, authenticate, paste the replacement code and continue with the current role. Installed boards can continue playing cached media while cloud settings are unavailable.
+Open the app on the board, choose **Board**, and enter the backend config, or paste a **setup code** copied from an admin device. Headless provisioning:
 
-Open **Settings → Activity logs** on the board or an admin phone to view the latest 250 local events. Logs include command results, playback state changes, sync failures, transfers, and updates. The logs store event names and selected status fields without backend credentials or authentication tokens.
+```bash
+adb shell am start -n app.androplay/.MainActivity --es role BOARD --es config <setup-code>
+```
 
 ### Zero-setup lab builds (optional)
 
-For private lab builds, put defaults in the ignored `local.properties` and explicitly build with `-Pandroplay.embedBackend=true`. Release publishing requires APKs built without embedded credentials.
+For a private lab recovery build, put defaults in the ignored `local.properties` and explicitly build with `-Pandroplay.embedBackend=true`. Keep credential-bearing APKs in private storage.
 
 ```properties
 androplay.redisUrl=rediss://default:<password>@<host>:6379
@@ -102,7 +108,14 @@ androplay.s3FallbackBuckets=androplay1,androplay2,androplay3
 
 ### Admin login
 
-New devices create their own admin credentials during setup. Existing devices can replace the legacy local login under **Settings → Change admin credentials**. The local account protects the admin dashboard, settings, logs and board unlock.
+Use your lab's existing local admin account. Ask the deployment administrator for its credentials.
+It protects:
+
+- the Admin dashboard (login screen on first open; **Settings → Log out** to sign out)
+- settings and role changes on any device (a fresh device can pick **Board / Player** without it)
+- unlocking a locked board
+
+The account is hardcoded; only a SHA-256 is stored. To change it, set `CREDENTIAL_HASH` in `app/src/main/java/app/androplay/core/AdminAuth.kt` to `sha256("USERNAME:password")` with the username in uppercase, e.g. `printf 'USERNAME:password' | shasum -a 256`.
 
 ## Updates (no GitHub needed on devices)
 
@@ -134,17 +147,3 @@ scripts/release.sh "What changed"
 ## Security note
 
 v1 keeps the Redis and storage credentials on trusted lab devices (app-private storage, entered once or provisioned with a setup code). A thin auth API that hands out scoped tokens is planned before any wider rollout. See the architecture doc.
-
-## Redis failover
-
-AndroPlay uses one Redis catalog. To keep cloud control working when the native Redis socket is blocked, open **Settings → Configure Redis HTTPS fallback** on the board and admin phones, enter an Upstash REST token for that same database, and save. The token can also be provisioned as `redisRestToken` in a private setup code. Procure a least-privilege token that supports the commands needed by the device role. **Activity logs** on the board records transport transitions.
-
-For database or region outages, configure provider-managed replication and backups for the authoritative database. HTTPS shares the same catalog and quota as native Redis. Use the [Redis standby recovery workflow](docs/REDIS_FAILOVER.md) to verify and promote an independent backup database.
-
-## Production cutover
-
-1. Create replacement credentials with the minimum Redis and storage permissions needed for each role. Keep the authoritative Redis catalog and save an independent backup before changing connection settings. Keep production credentials out of source control and public artifacts.
-2. Stage the replacement setup code on a test phone and board. Verify board heartbeat, catalog sync, upload, playback acknowledgment, LAN sharing, and update download. A new LAN client needs a fresh board identity and credential from Redis at least once.
-3. Provision existing phones and the live board with the replacement code. Confirm the board can sync from the authoritative Redis and read the release object with the replacement key before revoking the old keys. Use Settings on the new build for provisioning. Boards running an older build need a planned update or supervised install before cutover.
-4. Revoke the exposed credentials, remove the credential-bearing public artifacts, and review provider access and billing history. Keep a verified storage replica in a separate failure domain. An independent Redis database must be restored and verified before any cutover.
-5. Exercise recovery in a separate environment. Check restored content IDs, deletion tombstones, and the release record. Interrupt an upload and a board download, confirm both recover, and check the board can keep playing cached media when Redis and cloud storage are unavailable.

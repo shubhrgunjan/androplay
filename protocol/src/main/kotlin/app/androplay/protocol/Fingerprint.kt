@@ -16,24 +16,6 @@ import java.security.MessageDigest
 object Fingerprint {
     const val SAMPLE = 1 shl 20
 
-    fun sha256(file: File): String = RandomAccessFile(file, "r").use { sha256(it.channel, it.length()) }
-
-    fun sha256(channel: FileChannel, size: Long): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        val buffer = ByteBuffer.allocate(256 * 1024)
-        var offset = 0L
-        while (offset < size) {
-            buffer.clear()
-            buffer.limit(minOf(buffer.capacity().toLong(), size - offset).toInt())
-            val count = channel.read(buffer, offset)
-            if (count <= 0) throw IOException("Unexpected end of file at $offset")
-            buffer.flip()
-            digest.update(buffer)
-            offset += count
-        }
-        return digest.digest().toHex()
-    }
-
     fun of(file: File): String = RandomAccessFile(file, "r").use { of(it.channel, it.length()) }
 
     fun of(channel: FileChannel, size: Long = channel.size()): String {

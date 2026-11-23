@@ -122,8 +122,7 @@ Either way the board swaps to the preloaded player or starts the local file in 1
 
 ## Security (v1 vs. later)
 
-- Redis and object storage use TLS. Production device credentials are provisioned in Settings and stored in app-private storage. LAN sharing uses the board’s pinned TLS certificate and a separate LAN credential. BLE command writes require an encrypted link.
-- One Redis catalog is authoritative. Confirmed control requests carry content IDs, an expiry, and a request ID. The board deduplicates requests across BLE and Redis and acknowledges handling. Playback and transport events are recorded locally in Activity logs.
+- v1: the Redis URL and storage keys are provisioned once per device (app-private SharedPreferences, via the setup screen, a shareable setup code, or adb). TLS is used everywhere (`rediss://`, HTTPS). Fine for a closed set of lab devices.
 - Later: a small auth API issuing per-device Redis ACL users and presigned storage URLs, so no master credentials live on phones.
 
 ## Shared protocol module

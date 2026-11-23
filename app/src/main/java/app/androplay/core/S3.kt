@@ -46,35 +46,36 @@ class S3(config: BackendConfig, private val http: OkHttpClient) {
         }
     }
 
-    private val endpoint: HttpUrl = cfg.s3Endpoint.toHttpUrl().also { require(it.isHttps) { "Storage requires HTTPS" } }
+    private val endpoint: HttpUrl = cfg.s3Endpoint.toHttpUrl()
     private val region = cfg.s3Region.ifBlank { "auto" }
     private val buckets: List<String> = cfg.storageBuckets()
     @Volatile private var healthyIndex = 0
-    data class Multipart(val bucket: String, val id: String)
+    @Volatile private var writeBucket: String? = null
 
     fun putObject(key: String, bytes: ByteArray, contentType: String) {
         writeAll { putObjectOn(it, key, bytes, contentType) }
     }
 
-    fun createMultipart(key: String, contentType: String): Multipart =
-        firstWorking { bucket -> Multipart(bucket, createMultipartOn(bucket, key, contentType)) }
-
-    fun hasBucket(bucket: String): Boolean = bucket in buckets
+    fun createMultipart(key: String, contentType: String): String {
+        val (bucket, id) = firstWorking { b -> b to createMultipartOn(b, key, contentType) }
+        writeBucket = bucket
+        return id
+    }
 
     /** Returns the part's ETag, needed to complete the upload. */
-    fun uploadPart(key: String, upload: Multipart, partNumber: Int, bytes: ByteArray): String =
-        uploadPartOn(upload.bucket, key, upload.id, partNumber, bytes)
+    fun uploadPart(key: String, uploadId: String, partNumber: Int, bytes: ByteArray): String =
+        uploadPartOn(writeBucket ?: buckets.first(), key, uploadId, partNumber, bytes)
 
-    fun completeMultipart(key: String, upload: Multipart, parts: List<Pair<Int, String>>) {
-        completeMultipartOn(upload.bucket, key, upload.id, parts)
+    fun completeMultipart(key: String, uploadId: String, parts: List<Pair<Int, String>>) {
+        completeMultipartOn(writeBucket ?: buckets.first(), key, uploadId, parts)
     }
 
     /**
      * Best-effort copy onto every bucket except the one [createMultipart] already used.
      * Call after a successful primary upload so fallbacks can serve the same key.
      */
-    fun mirror(key: String, upload: Multipart, contentType: String, size: Long, read: (offset: Long, length: Int) -> ByteArray) {
-        val skip = upload.bucket
+    fun mirror(key: String, contentType: String, size: Long, read: (offset: Long, length: Int) -> ByteArray) {
+        val skip = writeBucket
         for (bucket in buckets) {
             if (bucket == skip) continue
             runCatching { putOn(bucket, key, contentType, size, read) }
@@ -176,6 +177,7 @@ class S3(config: BackendConfig, private val http: OkHttpClient) {
             try {
                 block(bucket)
                 ok = true
+                writeBucket = bucket
             } catch (e: Exception) {
                 Log.w(TAG, "$bucket write failed", e)
                 last = e

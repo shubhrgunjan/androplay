@@ -92,14 +92,14 @@ class BleLink(private val ctx: Context, private val scope: CoroutineScope) {
     }
 
     /** Returns false when BLE can't carry it right now; the caller falls back to Wi-Fi. */
-    suspend fun send(board: String, bytes: ByteArray, confirmed: Boolean): Boolean {
+    suspend fun send(cmd: Command): Boolean {
         val g = gatt
         val c = cmdChar
-        if (_status.value != Status.READY || boardId != board || g == null || c == null) return false
+        if (_status.value != Status.READY || g == null || c == null) return false
+        val bytes = cmd.encode()
         if (bytes.size > mtu - 3) return false
-        val type = if (confirmed) BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT else BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
         return runCatching {
-            write(g, c, bytes, type, timeoutMs = 1500) == BluetoothGatt.GATT_SUCCESS
+            write(g, c, bytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE, timeoutMs = 1500) == BluetoothGatt.GATT_SUCCESS
         }.getOrDefault(false)
     }
 

@@ -2,7 +2,6 @@ package app.androplay.protocol
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 class CodecTest {
@@ -21,25 +20,6 @@ class CodecTest {
         val token = ByteArray(16) { it.toByte() }
         val auth = Command.decode(Command.Auth(token).encode()) as Command.Auth
         assertArrayEquals(token, auth.token)
-    }
-
-    @Test
-    fun controlRequestsResolveTheContentIdEvenWhenHandlesChanged() {
-        val created = ControlRequest.create(Command.Play(12, 500)) { if (it == 12) "image-id" else null }!!
-        val received = ControlRequest.decode(created.encode())!!
-        assertEquals(created.id, received.id)
-        assertEquals(created.expiresAt, received.expiresAt)
-        assertEquals(Command.Play(4, 500), received.resolve { if (it == "image-id") 4 else null })
-        assertNull(received.resolve { null })
-        assertNull(ControlRequest.decode(Command.Next.encode()))
-    }
-
-    @Test
-    fun timedSlidesKeepTheirAlignmentWhenAFileIsUnavailable() {
-        val show = Command.Slideshow(listOf(1, 2, 3), 5, false, seconds = listOf(5, 7, 9))
-        val request = ControlRequest.create(show) { "id-$it" }!!
-        val resolved = request.resolve { if (it == "id-2") null else it.last().digitToInt() + 10 }
-        assertEquals(show.copy(handles = listOf(11, -1, 13)), resolved)
     }
 
     @Test

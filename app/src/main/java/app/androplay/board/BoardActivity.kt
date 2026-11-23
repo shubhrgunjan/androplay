@@ -219,7 +219,7 @@ class BoardActivity : ComponentActivity() {
         if (cmd != null) {
             // A held button should only repeat seeking, so it can't skip items or toggle playback.
             if (event.action == KeyEvent.ACTION_DOWN && (event.repeatCount == 0 || cmd is Command.SeekBy)) {
-                app.dispatch(cmd, "Remote key")
+                app.dispatch(cmd)
             }
             return true
         }

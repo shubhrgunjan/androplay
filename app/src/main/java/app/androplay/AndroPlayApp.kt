@@ -15,8 +15,6 @@ import app.androplay.board.SyncStatus
 import app.androplay.board.Thumbnails
 import app.androplay.core.Backend
 import app.androplay.core.BackendConfig
-import app.androplay.core.Diagnostics
-import app.androplay.protocol.ControlRequest
 import app.androplay.core.S3
 import app.androplay.core.Role
 import app.androplay.core.Settings
@@ -60,7 +58,6 @@ class AndroPlayApp : Application() {
     val admin by lazy { AdminRepository(this) }
 
     // Both roles
-    val diagnostics by lazy { Diagnostics(this, scope) }
     val updater by lazy { Updater(this) }
 
     override fun onCreate() {
@@ -79,51 +76,11 @@ class AndroPlayApp : Application() {
 
     fun newS3For(config: BackendConfig) = S3(config, http)
 
-    private val recentControls = LinkedHashMap<String, Pair<Long, Boolean>>()
-
-    fun receive(request: ControlRequest, source: String, acknowledge: (Boolean) -> Unit) {
-        scope.launch(Dispatchers.Main.immediate) {
-            val now = System.currentTimeMillis()
-            if (request.expiresAt < now || request.expiresAt > now + 30_000) {
-                diagnostics.record(source, "Command expired or device clock differs")
-                acknowledge(false)
-                return@launch
-            }
-            recentControls.entries.removeAll { it.value.first < now }
-            recentControls[request.id]?.let { (_, outcome) ->
-                acknowledge(outcome)
-                return@launch
-            }
-            if (recentControls.size >= 2048) {
-                acknowledge(false)
-                return@launch
-            }
-            val cmd = runCatching {
-                request.resolve { id ->
-                    store.item(id)?.handle?.takeIf { store.byHandle(it)?.id == id && store.fileOf(id) != null }
-                }
-            }.getOrNull()
-            if (cmd == null || (cmd is Command.Play && store.byHandle(cmd.handle)?.let { store.fileOf(it.id) } == null)) {
-                diagnostics.record(source, "Command rejected · content unavailable or invalid")
-                acknowledge(false)
-                return@launch
-            }
-            dispatch(cmd, source) { outcome ->
-                recentControls[request.id] = request.expiresAt to outcome
-                acknowledge(outcome)
-            }
-        }
-    }
-
     /** Single entry point for every board command source: Redis, BLE, remote keys and touch. */
-    fun dispatch(cmd: Command, source: String = "Touch", onHandled: (Boolean) -> Unit = {}) {
+    fun dispatch(cmd: Command) {
         if (cmd is Command.Play && settings.role == Role.BOARD) perf.prepareForPresentation()
         scope.launch(Dispatchers.Main.immediate) {
-            val handled = runCatching { engine.handle(cmd) }
-                .onFailure { android.util.Log.w("AndroPlay", "Command handling failed", it) }.isSuccess
-            val target = if (cmd is Command.Play) " #${cmd.handle}" else ""
-            diagnostics.record(source, "${cmd.javaClass.simpleName}$target ${if (handled) "handled" else "failed"}")
-            onHandled(handled)
+            engine.handle(cmd)
             if (!BoardActivity.visible && engine.needsScreen()) {
                 runCatching {
                     startActivity(
