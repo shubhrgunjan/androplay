@@ -7,7 +7,6 @@ import app.androplay.protocol.Item
 import app.androplay.protocol.Origin
 import app.androplay.protocol.PlaybackState
 import app.androplay.protocol.ProtocolJson
-import app.androplay.protocol.encode
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import java.io.Closeable
@@ -32,6 +31,7 @@ data class Content(
     val hasThumb: Boolean = false,
     /** Bytes the uploader has sent so far (for live upload progress on every device). */
     val uploaded: Long = 0,
+    val sha256: String = "",
 ) {
     fun isFor(boardId: String) = onlyOn.isEmpty() || onlyOn == boardId
 
@@ -42,7 +42,7 @@ data class Content(
         "size", size.toString(), "objectKey", objectKey, "status", if (ready) "ready" else "uploading",
         "origin", origin.name, "onlyOn", onlyOn, "addedBy", addedBy, "addedAt", addedAt.toString(),
         "durationMs", durationMs.toString(), "pageCount", pageCount.toString(), "thumb", if (hasThumb) "1" else "0",
-        "uploaded", uploaded.toString(),
+        "uploaded", uploaded.toString(), "sha256", sha256,
     )
 
     companion object {
@@ -65,6 +65,7 @@ data class Content(
                 pageCount = h["pageCount"]?.toIntOrNull() ?: 0,
                 hasThumb = h["thumb"] == "1",
                 uploaded = h["uploaded"]?.toLongOrNull() ?: 0,
+                sha256 = h["sha256"].orEmpty(),
             )
         }
     }
@@ -82,9 +83,14 @@ data class BoardInfo(
     val online: Boolean = false,
     /** Board's in-app update status ("Downloading v0.8.0 40%", "Update failed: …"); empty when up to date. */
     val update: String = "",
+    val confirmedControl: Boolean = false,
+    val lanPin: String = "",
+    val lanToken: String = "",
 ) {
     fun toHash(): Array<String> = arrayOf(
         "id", id, "name", name, "model", model, "ip", ip, "freeBytes", freeBytes.toString(),
+        "lanPin", lanPin, "lanToken", lanToken,
+        "confirmedControl", if (confirmedControl) "1" else "0",
         "appVersion", appVersion, "bleToken", bleToken, "lastSeen", lastSeen.toString(), "update", update,
     )
 
@@ -100,6 +106,9 @@ data class BoardInfo(
             lastSeen = h["lastSeen"]?.toLongOrNull() ?: 0,
             online = online,
             update = h["update"].orEmpty(),
+            confirmedControl = h["confirmedControl"] == "1",
+            lanPin = h["lanPin"].orEmpty(),
+            lanToken = h["lanToken"].orEmpty(),
         )
     }
 }
@@ -166,7 +175,7 @@ data class BoardSyncState(val have: Set<String> = emptySet(), val progress: Map<
 
 /** Typed access to the Redis key schema documented in docs/ARCHITECTURE.md. */
 class Backend(val config: BackendConfig) : Closeable {
-    val route: RedisRoute = RedisRoute.of(listOf(config.redisUrl) + config.fallbackRedisUrls)
+    val route: RedisRoute = RedisRoute(RedisUrl.parse(config.redisUrl), config.redisRestToken)
     private val redis = Redis(route)
     private val p = config.prefix
 
@@ -195,7 +204,8 @@ class Backend(val config: BackendConfig) : Closeable {
 
     fun newHandle(): Int {
         val n = redis.call("INCR", kHandle) as Long
-        return ((n - 1) % (PlaybackState.NO_HANDLE - 1) + 1).toInt()
+        check(n in 1 until PlaybackState.NO_HANDLE.toLong()) { "Catalog handle capacity reached" }
+        return n.toInt()
     }
 
     fun allContent(): List<Content> {
@@ -214,13 +224,13 @@ class Backend(val config: BackendConfig) : Closeable {
             arrayOf("ZADD", kContent, c.addedAt.toString(), c.id),
         )
         if (c.ready) cmds += event("add", c.id)
-        redis.pipeline(cmds)
+        redis.transaction(cmds)
     }
 
     fun updateContent(id: String, vararg fields: Pair<String, String>, emit: Boolean = true) {
         val cmds = mutableListOf(arrayOf("HSET", kItem(id), *fields.flatMap { listOf(it.first, it.second) }.toTypedArray()))
         if (emit) cmds += event("update", id)
-        redis.pipeline(cmds)
+        redis.transaction(cmds)
     }
 
     /**
@@ -228,20 +238,20 @@ class Backend(val config: BackendConfig) : Closeable {
      * real time; call at most a few times per second (once per uploaded part is ideal).
      */
     fun setUploadProgress(id: String, uploaded: Long) {
-        redis.pipeline(listOf(arrayOf("HSET", kItem(id), "uploaded", uploaded.toString()), event("progress", id)))
+        redis.transaction(listOf(arrayOf("HSET", kItem(id), "uploaded", uploaded.toString()), event("progress", id)))
     }
 
-    fun markReady(id: String, objectKey: String, hasThumb: Boolean) {
-        redis.pipeline(
+    fun markReady(id: String, objectKey: String, hasThumb: Boolean, sha256: String) {
+        redis.transaction(
             listOf(
-                arrayOf("HSET", kItem(id), "status", "ready", "objectKey", objectKey, "thumb", if (hasThumb) "1" else "0"),
+                arrayOf("HSET", kItem(id), "status", "ready", "objectKey", objectKey, "thumb", if (hasThumb) "1" else "0", "sha256", sha256),
                 event("add", id),
             ),
         )
     }
 
     fun deleteContent(id: String) {
-        redis.pipeline(
+        redis.transaction(
             listOf(arrayOf("DEL", kItem(id)), arrayOf("ZREM", kContent, id), arrayOf("SADD", kRemoved, id), event("remove", id)),
         )
     }
@@ -279,11 +289,11 @@ class Backend(val config: BackendConfig) : Closeable {
     fun putSlideshows(shows: List<Slideshow>) {
         if (shows.isEmpty()) return
         val fields = shows.flatMap { listOf(it.id, ProtocolJson.encodeToString(it)) }.toTypedArray()
-        redis.pipeline(listOf(arrayOf("HSET", kShows, *fields), event("show", shows.first().id)))
+        redis.transaction(listOf(arrayOf("HSET", kShows, *fields), event("show", shows.first().id)))
     }
 
     fun deleteSlideshow(id: String) {
-        redis.pipeline(listOf(arrayOf("HDEL", kShows, id), event("show", id)))
+        redis.transaction(listOf(arrayOf("HDEL", kShows, id), event("show", id)))
     }
 
     private fun event(op: String, id: String) = arrayOf("XADD", kEvents, "MAXLEN", "~", "10000", "*", "op", op, "id", id)
@@ -363,9 +373,15 @@ class Backend(val config: BackendConfig) : Closeable {
 
     // --- Control -----------------------------------------------------------------------------
 
-    fun publishCommand(board: String, cmd: Command) {
-        redis.call("PUBLISH", commandChannel(board), cmd.encode().b64())
+    fun publishCommand(board: String, bytes: ByteArray): Boolean =
+        (redis.callOnce("PUBLISH", commandChannel(board), bytes.b64()) as? Long ?: 0L) > 0
+
+    fun acknowledge(board: String, id: String, outcome: Boolean) {
+        redis.call("SET", "${p}ack:$board:$id", if (outcome) "applied" else "rejected", "EX", "60")
     }
+
+    fun commandOutcome(board: String, id: String): Boolean? =
+        (redis.call("GET", "${p}ack:$board:$id") as? String)?.let { it == "applied" }
 
     fun publishState(board: String, state: PlaybackState) {
         val v = state.encode().b64()
@@ -383,8 +399,9 @@ class Backend(val config: BackendConfig) : Closeable {
     data class Event(val streamId: String, val op: String, val contentId: String)
 
     class EventReader(private val redis: Redis, private val key: String) : Closeable {
-        fun read(after: String, blockMs: Long = 55_000): List<Event> {
-            val reply = redis.call("XREAD", "COUNT", "200", "BLOCK", blockMs.toString(), "STREAMS", key, after) as? List<*>
+        suspend fun read(after: String, blockMs: Long = 55_000): List<Event> {
+            if (redis.usingHttps) kotlinx.coroutines.delay(10_000)
+            val reply = redis.readStream(key, after, blockMs) as? List<*>
                 ?: return emptyList()
             val entries = ((reply.firstOrNull() as? List<*>)?.getOrNull(1) as? List<*>).orEmpty()
             return entries.mapNotNull { e ->

@@ -6,6 +6,7 @@ import app.androplay.BuildConfig
 import app.androplay.core.Backend
 import app.androplay.core.BoardInfo
 import app.androplay.core.Content
+import app.androplay.protocol.ControlRequest
 import app.androplay.core.RedisSubscriber
 import app.androplay.core.S3
 import app.androplay.core.unb64
@@ -76,12 +77,34 @@ class BoardSync(
 
     fun start() {
         subscriber = RedisSubscriber(backend.route, listOf(backend.commandChannel(me))) { _, payload ->
-            Command.decode(payload.unb64())?.let(app::dispatch)
+            val bytes = payload.unb64()
+            val request = ControlRequest.decode(bytes)
+            if (request != null) {
+                app.receive(request, "Cloud") { outcome ->
+                    scope.launch {
+                        runCatching { backend.acknowledge(me, request.id, outcome) }
+                            .onFailure { app.diagnostics.record("Cloud", "Command acknowledgment failed") }
+                    }
+                }
+            } else {
+                Command.decode(bytes)?.let { app.dispatch(it, "Cloud legacy") }
+            }
         }.also { it.start() }
+        scope.launch {
+            backend.route.httpsFallback.collect { usingHttps ->
+                app.diagnostics.record("Redis transport", if (usingHttps) "Trying HTTPS fallback" else "Native Redis preferred")
+            }
+        }
         scope.launch { heartbeatLoop() }
         scope.launch { eventLoop() }
         scope.launch { downloadLoop() }
         scope.launch { publishState() }
+        val commandSubscriber = subscriber
+        if (commandSubscriber != null) scope.launch {
+            commandSubscriber.connected.collect { connected ->
+                app.diagnostics.record("Control", if (connected) "Cloud listener connected" else "Cloud listener disconnected")
+            }
+        }
         scope.launch {
             while (isActive) {
                 autoUpdate()
@@ -136,6 +159,7 @@ class BoardSync(
     private suspend fun heartbeatLoop() {
         var sent: BoardInfo? = null
         var sentAt = 0L
+        var connected: Boolean? = null
         while (scope.isActive) {
             try {
                 val info = BoardInfo(
@@ -145,6 +169,9 @@ class BoardSync(
                     ip = NetUtil.localIp(app) ?: "",
                     freeBytes = store.freeBytes(),
                     appVersion = BuildConfig.VERSION_NAME,
+                    confirmedControl = true,
+                    lanPin = app.lan.certificatePin.orEmpty(),
+                    lanToken = app.lan.certificatePin?.let { app.settings.lanToken }.orEmpty(),
                     bleToken = app.settings.bleToken,
                     update = app.updater.statusText().orEmpty(),
                     lastSeen = System.currentTimeMillis(),
@@ -160,12 +187,16 @@ class BoardSync(
                 } else {
                     backend.stillOnline(me)
                 }
-                status.value = status.value.copy(connected = true, error = null)
+                if (connected != true) app.diagnostics.record("Sync", "Primary Redis connected")
+                connected = true
+                status.update { it.copy(connected = true, error = null) }
                 app.lan.refreshEndpoint()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                status.value = status.value.copy(connected = false, error = e.message ?: e.javaClass.simpleName)
+                if (connected != false) app.diagnostics.record("Sync", "Primary Redis unavailable (${e.javaClass.simpleName})")
+                connected = false
+                status.update { it.copy(connected = false, error = e.message ?: e.javaClass.simpleName) }
             }
             delay(HEARTBEAT_MS)
         }
@@ -189,7 +220,7 @@ class BoardSync(
                     }
                     if (events.isNotEmpty()) backend.setCursor(me, cursor)
                     // Events carry every change; this full pass (1 + one command per item) is only a safety net.
-                    if (System.currentTimeMillis() - lastFull > 60 * 60_000) {
+                    if (System.currentTimeMillis() - lastFull > 15 * 60_000) {
                         reconcile()
                         lastFull = System.currentTimeMillis()
                     }
@@ -198,6 +229,7 @@ class BoardSync(
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Sync loop failed", e)
+                app.diagnostics.record("Sync", "Catalog connection failed (${e.javaClass.simpleName})")
                 status.value = status.value.copy(error = e.message ?: e.javaClass.simpleName)
                 delay(backoff)
                 backoff = min(backoff * 2, 30_000)
@@ -207,6 +239,7 @@ class BoardSync(
         }
     }
 
+    @Synchronized
     private fun handleEvent(e: Backend.Event) {
         when (e.op) {
             "show" -> refreshShows()
@@ -219,7 +252,7 @@ class BoardSync(
             "progress" -> trackIncoming(e.contentId, backend.content(e.contentId))
             "remove" -> {
                 trackIncoming(e.contentId, null)
-                if (store.remove(e.contentId, deleteFile = true)) app.thumbnails.evict(e.contentId)
+                if (store.remove(e.contentId, deleteFile = store.item(e.contentId)?.origin == Origin.UPLOAD)) app.thumbnails.evict(e.contentId)
                 backend.removeHave(me, e.contentId)
             }
         }
@@ -262,6 +295,7 @@ class BoardSync(
         }
         while (scope.isActive && app.engine.state.value.status != Status.IDLE) delay(60_000)
         Log.i(TAG, "Installing update ${release.versionName}")
+        app.diagnostics.record("Update", "Installing version code ${release.versionCode}")
         app.updater.install(release)
     }
 
@@ -282,17 +316,15 @@ class BoardSync(
             runCatching { registerLocal(file, contents) }.onFailure { Log.w(TAG, "Skip $file", it) }
         }
 
-        // 2. Local entries the backend no longer knows: downloads an admin deleted go; any other
-        //    download is put back (a new or wiped database must not empty every board); board-owned
-        //    files are re-registered (never delete a user's own files because of a backend wipe).
+        // 2. Keep unknown cached downloads playable offline. Only authoritative tombstones delete them.
+        //    Board-owned files can be re-registered without restoring stale cloud metadata.
         val unknown = store.ids() - contents.keys
         val removed = if (unknown.isEmpty()) emptySet() else backend.removedIds()
         for (id in unknown) {
             val item = store.item(id) ?: continue
             if (item.origin == Origin.UPLOAD) {
                 if (id in removed) store.remove(id, deleteFile = true)
-                else runCatching { restoreUpload(item, contents) }.onFailure { Log.w(TAG, "Restore ${item.name}", it) }
-            } else {
+            } else if (id !in removed) {
                 val file = store.fileOf(id) ?: continue
                 store.remove(id, deleteFile = false)
                 runCatching { registerLocal(file, contents) }
@@ -347,18 +379,6 @@ class BoardSync(
         store.put(content.toItem().copy(durationMs = duration, pageCount = pages), file)
     }
 
-    /** Re-announces an admin upload this board holds; the file itself is still in storage. */
-    private fun restoreUpload(item: Item, contents: MutableMap<String, Content>) {
-        val c = Content(
-            id = item.id, handle = backend.newHandle(), name = item.name, type = item.type, mime = item.mime,
-            size = item.size, ready = true, objectKey = "content/${item.id}", origin = Origin.UPLOAD,
-            addedBy = app.settings.deviceName, addedAt = item.addedAt, durationMs = item.durationMs,
-            pageCount = item.pageCount, hasThumb = true,
-        )
-        backend.putContent(c)
-        contents[c.id] = c
-    }
-
     private fun uploadThumb(id: String, file: File, type: ContentType): Boolean = runCatching {
         val jpeg = app.thumbnails.render(file, type) ?: return false
         s3.putObject("thumbs/$id.jpg", jpeg, "image/jpeg")
@@ -383,8 +403,10 @@ class BoardSync(
                     throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "Download ${c.name} failed", e)
-                    if (e is S3.S3Error && e.code == 404) break // object gone; nothing to fetch
-                    delay(min(2_000L shl min(attempt++, 4), 30_000))
+                    app.diagnostics.record("Download", "Failed (${e.javaClass.simpleName})")
+                    if (e is S3.S3Error && e.code == 404) break
+                    if (++attempt >= 3) break // Others can proceed; reconciliation queues this again.
+                    delay(2_000L shl (attempt - 1))
                 }
             }
             queued -= c.id
@@ -421,10 +443,14 @@ class BoardSync(
         status.value = status.value.copy(downloading = c.name, downloadProgress = offset / c.size.coerceAtLeast(1).toFloat())
 
         if (offset < c.size) {
+            if (c.size - offset > store.freeBytes() - 512L * 1024 * 1024) throw IOException("Not enough board storage")
             s3.get(c.objectKey, offset).use { response ->
                 if (offset > 0 && response.code != 206) {
                     part.delete() // server ignored the Range header; start over
                     offset = 0
+                }
+                if (response.code == 206 && response.header("Content-Range") != "bytes $offset-${c.size - 1}/${c.size}") {
+                    throw IOException("Storage returned an unexpected byte range")
                 }
                 val body = response.body ?: throw IOException("Empty body")
                 FileOutputStream(part, offset > 0).use { out ->
@@ -434,6 +460,7 @@ class BoardSync(
                     while (true) {
                         val n = input.read(buf)
                         if (n < 0) break
+                        if (n > c.size - offset) throw IOException("Download exceeds expected size")
                         out.write(buf, 0, n)
                         offset += n
                         yieldToPresentation(n)
@@ -448,18 +475,29 @@ class BoardSync(
             }
         }
         if (part.length() != c.size) throw IOException("Incomplete download (${part.length()}/${c.size})")
-        if (Fingerprint.of(part) != c.id) {
+        val verified = if (c.sha256.isBlank()) Fingerprint.of(part) == c.id else Fingerprint.sha256(part) == c.sha256
+        if (!verified) {
             part.delete()
             throw IOException("Checksum mismatch for ${c.name}")
         }
-        val dest = store.destinationFor(c.name)
-        if (!part.renameTo(dest)) {
-            part.copyTo(dest)
-            part.delete()
+        val (duration, pages) = store.probe(part, c.type)
+        synchronized(this) {
+            val current = backend.content(c.id)
+            if (current == null || !current.ready || !current.isFor(me) ||
+                current.objectKey != c.objectKey || current.size != c.size || current.sha256 != c.sha256
+            ) {
+                part.delete()
+                return
+            }
+            val dest = store.destinationFor(current.name)
+            if (!part.renameTo(dest)) {
+                part.copyTo(dest)
+                part.delete()
+            }
+            store.put(current.toItem().copy(durationMs = duration, pageCount = pages), dest)
+            backend.addHave(me, c.id)
         }
-        val (duration, pages) = store.probe(dest, c.type)
-        store.put(c.toItem().copy(durationMs = duration, pageCount = pages), dest)
-        backend.addHave(me, c.id)
+        app.diagnostics.record("Download", "Cached item ${c.handle}")
         if ((c.durationMs == 0L && duration > 0) || (c.pageCount == 0 && pages > 0)) {
             runCatching {
                 backend.updateContent(c.id, "durationMs" to duration.toString(), "pageCount" to pages.toString(), emit = false)

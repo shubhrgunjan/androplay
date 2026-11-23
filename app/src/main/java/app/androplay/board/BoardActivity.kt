@@ -217,7 +217,10 @@ class BoardActivity : ComponentActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val cmd = keyCommand(event.keyCode)
         if (cmd != null) {
-            if (event.action == KeyEvent.ACTION_DOWN) app.dispatch(cmd)
+            // A held button should only repeat seeking, so it can't skip items or toggle playback.
+            if (event.action == KeyEvent.ACTION_DOWN && (event.repeatCount == 0 || cmd is Command.SeekBy)) {
+                app.dispatch(cmd, "Remote key")
+            }
             return true
         }
         return super.dispatchKeyEvent(event)

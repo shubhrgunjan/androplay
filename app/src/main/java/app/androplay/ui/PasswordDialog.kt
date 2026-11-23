@@ -12,14 +12,19 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import app.androplay.core.AdminAuth
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Admin username + password prompt. Calls [onSuccess] only for valid credentials. */
 @Composable
@@ -29,12 +34,24 @@ fun PasswordDialog(
     onDismiss: () -> Unit,
     onSuccess: () -> Unit,
 ) {
+    val ctx = LocalContext.current
     var user by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
     var error by remember { mutableStateOf(false) }
 
+    val scope = rememberCoroutineScope()
+    var checking by remember { mutableStateOf(false) }
+
     fun submit() {
-        if (AdminAuth.check(user, pass)) onSuccess() else error = true
+        if (checking) return
+        checking = true
+        val username = user
+        val password = pass
+        scope.launch {
+            val valid = withContext(Dispatchers.Default) { AdminAuth.check(ctx, username, password) }
+            checking = false
+            if (valid) onSuccess() else error = true
+        }
     }
 
     AlertDialog(

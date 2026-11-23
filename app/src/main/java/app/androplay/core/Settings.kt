@@ -23,16 +23,24 @@ data class BackendConfig(
     val bucket: String = "",
     val accessKey: String = "",
     val secretKey: String = "",
-    val fallbackBuckets: List<String> = DEFAULT_FALLBACK_BUCKETS,
-    /** Tried in order when the primary Redis is down or out of quota. */
+    val fallbackBuckets: List<String> = emptyList(),
+    /** Retained for reading older setup codes. Independent databases are never selected automatically. */
     val fallbackRedisUrls: List<String> = emptyList(),
+    val redisRestToken: String = "",
 ) {
     val isComplete: Boolean
         get() = listOf(redisUrl, s3Endpoint, bucket, accessKey, secretKey).all { it.isNotBlank() }
 
+    val isSecure: Boolean
+        get() = isComplete && runCatching {
+            val redis = RedisUrl.parse(redisUrl)
+            redis.tls && (redisRestToken.isBlank() || RedisRest.supports(redis)) &&
+                java.net.URI(s3Endpoint).let { it.scheme == "https" && it.host != null }
+        }.getOrDefault(false)
+
     /** Primary bucket first, then fallbacks (skips blanks and duplicates). */
     fun storageBuckets(): List<String> =
-        (listOf(bucket) + fallbackBuckets.ifEmpty { DEFAULT_FALLBACK_BUCKETS })
+        (listOf(bucket) + fallbackBuckets)
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .distinct()
@@ -50,6 +58,7 @@ data class BackendConfig(
             accessKey = accessKey.trim(),
             secretKey = secretKey.trim(),
             fallbackBuckets = fallbackBuckets.map { it.trim() }.filter { it.isNotEmpty() }.distinct(),
+            redisRestToken = redisRestToken.trim(),
             fallbackRedisUrls = fallbackRedisUrls.map(RedisUrl::normalize).filter { it.isNotEmpty() }.distinct(),
         )
     }
@@ -63,7 +72,11 @@ data class BackendConfig(
         val known = (listOf(build.redisUrl) + build.fallbackRedisUrls).filter { it.isNotBlank() }.map(::hostOf).toSet()
         if (build.redisUrl.isBlank() || hostOf(redisUrl) !in known) return this
         if (redisUrl == build.redisUrl && fallbackRedisUrls == build.fallbackRedisUrls) return this
-        return copy(redisUrl = build.redisUrl, fallbackRedisUrls = build.fallbackRedisUrls)
+        return copy(
+            redisUrl = build.redisUrl,
+            fallbackRedisUrls = build.fallbackRedisUrls,
+            redisRestToken = redisRestToken.takeIf { hostOf(redisUrl) == hostOf(build.redisUrl) }.orEmpty(),
+        )
     }
 
     fun toCode(): String =
@@ -73,8 +86,6 @@ data class BackendConfig(
         fun fromCode(code: String): BackendConfig? = runCatching {
             ProtocolJson.decodeFromString<BackendConfig>(Base64.decode(code.trim(), Base64.URL_SAFE).decodeToString())
         }.getOrNull()
-
-        val DEFAULT_FALLBACK_BUCKETS = listOf("androplay1", "androplay2", "androplay3")
 
         private fun hostOf(url: String): String = runCatching { RedisUrl.parse(url).host }.getOrDefault(url)
 
@@ -89,7 +100,7 @@ data class BackendConfig(
                 .split(',')
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
-                .ifEmpty { DEFAULT_FALLBACK_BUCKETS },
+                .distinct(),
             fallbackRedisUrls = BuildConfig.DEFAULT_REDIS_FALLBACK_URLS
                 .split(',')
                 .map { RedisUrl.normalize(it) }
@@ -105,8 +116,11 @@ class Settings(ctx: Context) {
         ?: UUID.randomUUID().toString().take(8).also { sp.edit().putString("deviceId", it).apply() }
 
     /** Board only: secret phones must present over BLE. Shared with admins through Redis. */
-    val bleToken: String = sp.getString("bleToken", null)
-        ?: ByteArray(16).also(SecureRandom()::nextBytes).toHex().also { sp.edit().putString("bleToken", it).apply() }
+    val bleToken: String = sp.getString("bleTokenV2", null)
+        ?: ByteArray(16).also(SecureRandom()::nextBytes).toHex().also { sp.edit().putString("bleTokenV2", it).apply() }
+
+    val lanToken: String = sp.getString("lanTokenV2", null)
+        ?: ByteArray(32).also(SecureRandom()::nextBytes).toHex().also { sp.edit().putString("lanTokenV2", it).apply() }
 
     var role: Role?
         get() = sp.getString("role", null)?.let { runCatching { Role.valueOf(it) }.getOrNull() }
@@ -119,8 +133,6 @@ class Settings(ctx: Context) {
     var config: BackendConfig
         get() = (sp.getString("config", null)
             ?.let { runCatching { ProtocolJson.decodeFromString<BackendConfig>(it) }.getOrNull() }
-            ?: BackendConfig.buildDefault).let { cfg ->
-            if (cfg.fallbackBuckets.isEmpty()) cfg.copy(fallbackBuckets = BackendConfig.DEFAULT_FALLBACK_BUCKETS) else cfg
-        }.withBuildRedis()
+            ?: BackendConfig.buildDefault).withBuildRedis()
         set(value) = sp.edit().putString("config", ProtocolJson.encodeToString(value)).apply()
 }

@@ -44,7 +44,7 @@ def version():
 
 def buckets(p):
     out = [p["s3Bucket"]]
-    extra = p.get("s3FallbackBuckets") or "androplay1,androplay2,androplay3"
+    extra = p.get("s3FallbackBuckets", "")
     for b in extra.split(","):
         b = b.strip()
         if b and b not in out:
@@ -53,22 +53,23 @@ def buckets(p):
 
 
 def s3_put(p, key, body, content_type):
-    last = None
-    ok = False
-    for bucket in buckets(p):
+    expected = hashlib.sha256(body).digest()
+    for index, bucket in enumerate(buckets(p)):
         try:
-            s3_put_to(p, bucket, key, body, content_type)
-            print(f"  uploaded to {bucket}")
-            ok = True
+            s3_request(p, bucket, key, "PUT", body, content_type)
+            if s3_request(p, bucket, key, "GET") != expected:
+                raise RuntimeError("Read-back checksum differs from the release APK")
+            print(f"  uploaded and verified on {bucket}")
         except Exception as e:
-            last = e
-            print(f"  {bucket} failed: {e}")
-    if not ok:
-        sys.exit(str(last) if last else "Upload failed on every bucket")
+            if index == 0:
+                sys.exit(f"Primary release bucket failed verification: {e}")
+            print(f"  replica was not verified on {bucket}: {e}")
 
 
-def s3_put_to(p, bucket, key, body, content_type):
+def s3_request(p, bucket, key, method, body=b"", content_type="application/octet-stream"):
     endpoint = urllib.parse.urlparse(p["s3Endpoint"])
+    if endpoint.scheme != "https" or not endpoint.hostname:
+        raise ValueError("Release storage requires HTTPS")
     host = endpoint.netloc
     region = p.get("s3Region") or "auto"
     path = "/" + bucket + "/" + "/".join(urllib.parse.quote(s, safe="-_.~") for s in key.split("/"))
@@ -76,7 +77,7 @@ def s3_put_to(p, bucket, key, body, content_type):
     amz_date, day = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
     payload_hash = hashlib.sha256(body).hexdigest()
     canonical = "\n".join([
-        "PUT", path, "",
+        method, path, "",
         f"host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n",
         "host;x-amz-content-sha256;x-amz-date", payload_hash,
     ])
@@ -94,20 +95,26 @@ def s3_put_to(p, bucket, key, body, content_type):
         "Authorization": f"AWS4-HMAC-SHA256 Credential={p['s3AccessKey']}/{scope}, "
                          f"SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature={signature}",
     }
-    conn_cls = http.client.HTTPSConnection if endpoint.scheme == "https" else http.client.HTTPConnection
-    conn = conn_cls(host, timeout=300)
-    conn.request("PUT", path, body=body, headers=headers)
-    r = conn.getresponse()
-    text = r.read().decode(errors="replace")
-    if r.status >= 300:
-        raise RuntimeError(f"HTTP {r.status} {text[:500]}")
+    conn = http.client.HTTPSConnection(host, timeout=120)
+    try:
+        conn.request(method, path, body=body, headers=headers)
+        response = conn.getresponse()
+        if response.status >= 300:
+            raise RuntimeError(f"HTTP {response.status}")
+        if method == "GET":
+            return hashlib.file_digest(response, "sha256").digest()
+        response.read()
+    finally:
+        conn.close()
 
 
 class Redis:
     def __init__(self, url):
         u = urllib.parse.urlparse(url.strip())
+        if u.scheme != "rediss":
+            raise ValueError("Release Redis requires TLS")
         raw = socket.create_connection((u.hostname, u.port or 6379), timeout=15)
-        self.sock = ssl.create_default_context().wrap_socket(raw, server_hostname=u.hostname) if u.scheme == "rediss" else raw
+        self.sock = ssl.create_default_context().wrap_socket(raw, server_hostname=u.hostname)
         self.buf = self.sock.makefile("rb")
         if u.password:
             self.call("AUTH", *( [urllib.parse.unquote(u.username)] if u.username else []), urllib.parse.unquote(u.password))
@@ -136,6 +143,22 @@ class Redis:
         raise RuntimeError(f"Unexpected reply {line!r}")
 
 
+def verify_no_embedded_credentials(p, apk):
+    import zipfile
+
+    redis = urllib.parse.urlparse(p["redisUrl"])
+    values = [urllib.parse.unquote(redis.password or ""), p["s3AccessKey"], p["s3SecretKey"]]
+    for url in p.get("redisFallbackUrls", "").split(","):
+        values.append(urllib.parse.unquote(urllib.parse.urlparse(url.strip()).password or ""))
+    needles = [value.encode() for value in values if len(value) >= 8]
+    with zipfile.ZipFile(apk) as archive:
+        for name in archive.namelist():
+            if name.endswith(".dex"):
+                dex = archive.read(name)
+                if any(value in dex for value in needles):
+                    sys.exit("APK contains backend credentials. Build without androplay.embedBackend.")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apk", default=str(ROOT / "app/build/outputs/apk/release/app-release.apk"))
@@ -146,6 +169,7 @@ def main():
     code, name = version()
     apk = Path(args.apk)
     data = apk.read_bytes()
+    verify_no_embedded_credentials(p, apk)
     sha = hashlib.sha256(data).hexdigest()
     key = f"releases/androplay-{name}-{code}.apk"
     prefix = p.get("prefix") or "ap:"
@@ -153,8 +177,8 @@ def main():
     print(f"Uploading v{name} ({code}), {len(data) / 1e6:.1f} MB -> {key}")
     s3_put(p, key, data, "application/vnd.android.package-archive")
 
-    # Announce on the primary and every fallback, since devices may be on any of them.
-    urls = [p["redisUrl"]] + [u.strip() for u in p.get("redisFallbackUrls", "").split(",") if u.strip()]
+    # Independent databases are not replicas. Only announce to the authoritative Redis.
+    urls = [p["redisUrl"]]
     announced = 0
     for i, url in enumerate(urls):
         label = "primary" if i == 0 else f"fallback {i}"

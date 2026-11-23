@@ -18,6 +18,11 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import app.androplay.AndroPlayApp
 import app.androplay.core.Role
+import app.androplay.protocol.PlaybackState
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
@@ -29,6 +34,7 @@ class BoardService : Service() {
     private var ble: BleServer? = null
     private var sync: BoardSync? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var playbackLogs: Job? = null
 
     private val bluetoothReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -44,6 +50,14 @@ class BoardService : Service() {
         app = application as AndroPlayApp
         ServiceCompat.startForeground(this, 1, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         app.perf.start()
+        playbackLogs = app.scope.launch {
+            app.engine.state.map { Triple(it.status, it.handle, it.slideshow) }
+                .distinctUntilChanged().collect { (status, handle, slideshow) ->
+                    val target = if (handle == PlaybackState.NO_HANDLE) "" else " · item #$handle"
+                    val mode = if (slideshow) " · slideshow" else ""
+                    app.diagnostics.record("Playback", "${status.name}$target$mode")
+                }
+        }
         app.screenKeeper.start()
         startSync()
         restartBle()
@@ -69,6 +83,7 @@ class BoardService : Service() {
 
     override fun onDestroy() {
         unregisterReceiver(bluetoothReceiver)
+        playbackLogs?.cancel()
         sync?.stop()
         app.sync = null
         app.lan.stop()

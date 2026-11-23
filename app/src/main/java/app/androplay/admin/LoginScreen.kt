@@ -39,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -52,6 +53,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import app.androplay.core.AdminAuth
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Full-screen admin login shown before the dashboard. Calls [onLoggedIn] after valid credentials. */
 @Composable
@@ -63,18 +67,29 @@ fun LoginScreen(onLoggedIn: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var showPass by remember { mutableStateOf(false) }
 
+    val scope = rememberCoroutineScope()
+    var checking by remember { mutableStateOf(false) }
+
     fun submit() {
+        if (checking) return
         if (user.isBlank() || pass.isEmpty()) {
             error = "Enter username and password"
             return
         }
-        if (AdminAuth.check(user, pass)) {
-            focus.clearFocus()
-            AdminAuth.setLoggedIn(ctx, true)
-            onLoggedIn()
-        } else {
-            error = "Wrong username or password"
-            pass = ""
+        checking = true
+        val username = user
+        val password = pass
+        scope.launch {
+            val valid = withContext(Dispatchers.Default) { AdminAuth.check(ctx, username, password) }
+            checking = false
+            if (valid) {
+                focus.clearFocus()
+                AdminAuth.setLoggedIn(ctx, true)
+                onLoggedIn()
+            } else {
+                error = "Wrong username or password"
+                pass = ""
+            }
         }
     }
 

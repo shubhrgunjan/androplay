@@ -157,7 +157,7 @@ fun BoardScreen(
                 Box(Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onTap = { app.dispatch(Command.ToggleLibrary) }) })
             }
             if (libraryOpen && display !is Display.Idle) {
-                Box(Modifier.fillMaxSize().background(Board.Overlay)) { LibraryOverlay(app) }
+                Box(Modifier.fillMaxSize().background(Board.Overlay)) { LibraryOverlay(app, onSettings) }
             }
             IncomingUploadsCard(app, Modifier.align(Alignment.BottomEnd).padding(24.dp))
             if (display is Display.Idle) UpdateChip(app, Modifier.align(Alignment.BottomStart).padding(24.dp))
@@ -282,13 +282,15 @@ private fun RoundIconButton(icon: ImageVector, label: String, onClick: () -> Uni
 // ---------------------------------------------------------------- overlay library
 
 @Composable
-private fun LibraryOverlay(app: AndroPlayApp) {
+private fun LibraryOverlay(app: AndroPlayApp, onSettings: () -> Unit) {
     val state by app.engine.state.collectAsState()
     Column(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 36.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Library", color = Board.Text, fontSize = 34.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
             RoundIconButton(Icons.Filled.Refresh, "Rescan") { app.sync?.requestRescan() }
+            Spacer(Modifier.width(12.dp))
+            RoundIconButton(Icons.Filled.Settings, "Settings", onSettings)
             if (state.handle != PlaybackState.NO_HANDLE) {
                 Spacer(Modifier.width(16.dp))
                 Button(

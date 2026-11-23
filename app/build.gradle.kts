@@ -11,8 +11,10 @@ plugins {
 val local = Properties().apply {
     rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
 }
+// Provision production devices through authenticated Settings. Explicitly opt in for private lab builds only.
+val embedBackend = providers.gradleProperty("androplay.embedBackend").orNull == "true"
 fun localString(key: String, default: String = "") =
-    "\"" + (local.getProperty(key) ?: default).replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+    "\"" + (local.getProperty(key).takeIf { embedBackend } ?: default).replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
 android {
     namespace = "app.androplay"
@@ -22,8 +24,8 @@ android {
         applicationId = "app.androplay"
         minSdk = 28
         targetSdk = 34
-        versionCode = 20
-        versionName = "0.9.0"
+        versionCode = 22
+        versionName = "0.9.2"
 
         buildConfigField("String", "DEFAULT_REDIS_URL", localString("androplay.redisUrl"))
         buildConfigField("String", "DEFAULT_REDIS_FALLBACK_URLS", localString("androplay.redisFallbackUrls"))
@@ -35,7 +37,7 @@ android {
         buildConfigField(
             "String",
             "DEFAULT_S3_FALLBACK_BUCKETS",
-            localString("androplay.s3FallbackBuckets", "androplay1,androplay2,androplay3"),
+            localString("androplay.s3FallbackBuckets"),
         )
     }
 
@@ -73,6 +75,7 @@ android {
 
 dependencies {
     implementation(project(":protocol"))
+    testImplementation(libs.junit)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)

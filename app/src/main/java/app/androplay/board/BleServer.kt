@@ -18,6 +18,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.ParcelUuid
 import app.androplay.AndroPlayApp
+import app.androplay.protocol.ControlRequest
 import app.androplay.protocol.Ble
 import app.androplay.protocol.DeviceInfo
 import app.androplay.protocol.Net
@@ -64,7 +65,7 @@ class BleServer(private val ctx: Context, private val app: AndroPlayApp) {
             BluetoothGattCharacteristic(
                 Ble.CMD,
                 BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
-                BluetoothGattCharacteristic.PERMISSION_WRITE,
+                BluetoothGattCharacteristic.PERMISSION_WRITE_ENCRYPTED,
             ),
         )
         stateChar = BluetoothGattCharacteristic(
@@ -183,12 +184,22 @@ class BleServer(private val ctx: Context, private val app: AndroPlayApp) {
             preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray?,
         ) {
             var ok = false
-            if (characteristic.uuid == Ble.CMD && value != null) {
+            if (characteristic.uuid == Ble.CMD && value != null && !preparedWrite && offset == 0) {
+                val request = ControlRequest.decode(value)
+                if (request != null && responseNeeded && device.address in authorized) {
+                    app.receive(request, "Bluetooth") { outcome ->
+                        server?.sendResponse(
+                            device, requestId,
+                            if (outcome) BluetoothGatt.GATT_SUCCESS else GATT_WRITE_NOT_PERMITTED, 0, null,
+                        )
+                    }
+                    return
+                }
                 val cmd = Command.decode(value)
                 ok = when {
                     cmd is Command.Auth -> (cmd.token.toHex() == app.settings.bleToken).also { if (it) authorized += device.address }
                     cmd != null && device.address in authorized -> {
-                        app.dispatch(cmd)
+                        app.dispatch(cmd, "Bluetooth")
                         true
                     }
                     else -> false

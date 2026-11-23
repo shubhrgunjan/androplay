@@ -25,47 +25,37 @@ import kotlin.math.min
  * don't belong on Android.
  */
 
-class RedisError(message: String) : IOException(message) {
-    /** The database refuses all work (quota used up, bad credentials): another one may not. */
-    val unusable: Boolean
-        get() = message.orEmpty().let { m ->
-            listOf("max requests limit", "max daily request limit", "NOAUTH", "WRONGPASS", "invalid password")
-                .any { m.contains(it, ignoreCase = true) }
-        }
-}
+class RedisError(message: String) : IOException(message)
 
-/**
- * The primary Redis plus fallbacks, shared by every connection in the process so they all
- * agree on one database. [failover] moves to the next one; the primary is retried after
- * [RETRY_PRIMARY_MS].
- */
-class RedisRoute private constructor(val urls: List<RedisUrl>) {
-    @Volatile private var index = 0
-    @Volatile private var failedAt = 0L
-
-    val current: RedisUrl
-        get() {
-            if (index != 0 && System.currentTimeMillis() - failedAt > RETRY_PRIMARY_MS) index = 0
-            return urls[index]
-        }
-
-    /** Moves on from [from] if it is still the active database. */
-    @Synchronized
-    fun failover(from: RedisUrl) {
-        if (urls.size < 2 || urls[index] != from) return
-        index = (index + 1) % urls.size
-        failedAt = System.currentTimeMillis()
+/** A transport change never changes the Redis host or the logical database. */
+class RedisRoute(val primary: RedisUrl, restToken: String) {
+    init {
+        require(primary.tls) { "Redis requires TLS" }
+        require(restToken.isBlank() || RedisRest.supports(primary)) { "Redis HTTPS fallback requires an Upstash endpoint" }
     }
 
-    companion object {
-        private const val RETRY_PRIMARY_MS = 10 * 60_000L
-        private val shared = HashMap<List<RedisUrl>, RedisRoute>()
+    val rest = restToken.takeIf { it.isNotBlank() }?.let { RedisRest(primary.host, it) }
+    @Volatile private var fallbackUntil = 0L
+    private val _httpsFallback = MutableStateFlow(false)
+    val httpsFallback = _httpsFallback.asStateFlow()
 
-        fun of(urls: List<String>): RedisRoute {
-            val parsed = urls.filter { it.isNotBlank() }.map(RedisUrl::parse).distinct()
-            require(parsed.isNotEmpty()) { "No Redis URL configured" }
-            return synchronized(shared) { shared.getOrPut(parsed) { RedisRoute(parsed) } }
+    val useHttps: Boolean
+        get() = rest != null && System.nanoTime() < fallbackUntil
+
+    @Synchronized
+    fun nativeUnavailable(error: IOException): Boolean {
+        if (rest == null || error is SSLException) return false
+        if (error is RedisError && !error.message.orEmpty().contains("max concurrent connections", ignoreCase = true)) {
+            return false
         }
+        fallbackUntil = System.nanoTime() + java.util.concurrent.TimeUnit.MINUTES.toNanos(2)
+        _httpsFallback.value = true
+        return true
+    }
+
+    @Synchronized
+    fun nativeReady() {
+        if (!useHttps) _httpsFallback.value = false
     }
 }
 
@@ -119,8 +109,13 @@ class RedisConnection(private val url: RedisUrl, readTimeoutMs: Int = 15_000) : 
 
     init {
         socket.soTimeout = readTimeoutMs
-        url.password?.let { if (url.user != null) call("AUTH", url.user, it) else call("AUTH", it) }
-        if (url.db != 0) call("SELECT", url.db.toString())
+        try {
+            url.password?.let { if (url.user != null) call("AUTH", url.user, it) else call("AUTH", it) }
+            if (url.db != 0) call("SELECT", url.db.toString())
+        } catch (e: IOException) {
+            close()
+            throw e
+        }
     }
 
     private fun open(): Socket {
@@ -131,12 +126,17 @@ class RedisConnection(private val url: RedisUrl, readTimeoutMs: Int = 15_000) : 
         if (!url.tls) return plain
         val ssl = (SSLSocketFactory.getDefault() as SSLSocketFactory)
             .createSocket(plain, url.host, url.port, true) as SSLSocket
-        ssl.startHandshake()
-        if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(url.host, ssl.session)) {
+        try {
+            ssl.soTimeout = 8_000
+            ssl.startHandshake()
+            if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(url.host, ssl.session)) {
+                throw SSLException("Redis TLS certificate does not match ${url.host}")
+            }
+            return ssl
+        } catch (e: Exception) {
             ssl.close()
-            throw SSLException("Redis TLS certificate does not match ${url.host}")
+            throw e
         }
-        return ssl
     }
 
     @Synchronized
@@ -194,7 +194,13 @@ class RedisConnection(private val url: RedisUrl, readTimeoutMs: Int = 15_000) : 
             }
             '*' -> {
                 val n = line.toInt()
-                if (n < 0) null else List(n) { read() }
+                if (n < 0) null else List(n) {
+                    try {
+                        read()
+                    } catch (e: RedisError) {
+                        e
+                    }
+                }
             }
             else -> throw IOException("Unexpected RESP type '${type.toChar()}'")
         }
@@ -232,43 +238,73 @@ class RedisConnection(private val url: RedisUrl, readTimeoutMs: Int = 15_000) : 
     }
 }
 
-/**
- * A lazily (re)connecting client. Network errors are retried (moving to a fallback database
- * after the first), as are errors meaning the database refuses everything. Other Redis errors
- * are thrown as is.
- */
+/** Native Redis first, with optional HTTPS transport to the same database. */
 class Redis(private val route: RedisRoute, private val readTimeoutMs: Int = 15_000) : Closeable {
     private var conn: RedisConnection? = null
-    private var connUrl: RedisUrl? = null
+    val usingHttps: Boolean get() = route.useHttps
 
-    @Synchronized
-    fun <T> use(block: (RedisConnection) -> T): T {
-        var last: IOException? = null
-        repeat(route.urls.size + 1) { attempt ->
-            val url = route.current
-            if (connUrl != url) close()
-            try {
-                val c = conn ?: RedisConnection(url, readTimeoutMs).also { conn = it; connUrl = url }
-                return block(c)
-            } catch (e: RedisError) {
-                if (!e.unusable) throw e
-                close()
-                route.failover(url)
-                last = e
-            } catch (e: IOException) {
-                close()
-                if (attempt > 0) route.failover(url)
-                last = e
-            }
-        }
-        throw last!!
+    fun call(vararg args: String): Any? = execute(
+        replayable = args.firstOrNull() in READ_ONLY,
+        tcp = { it.call(*args) },
+        https = { it.call(args) },
+    )
+
+    fun callOnce(vararg args: String): Any? = execute(
+        replayable = false,
+        tcp = { it.call(*args) },
+        https = { it.call(args) },
+    )
+
+    fun readStream(key: String, after: String, blockMs: Long): Any? = execute(
+        replayable = true,
+        tcp = { it.call("XREAD", "COUNT", "200", "BLOCK", blockMs.toString(), "STREAMS", key, after) },
+        https = { it.call(arrayOf("XREAD", "COUNT", "200", "STREAMS", key, after)) },
+    )
+
+    fun transaction(commands: List<Array<String>>) {
+        execute(replayable = false, tcp = { connection ->
+            val replies = connection.pipeline(listOf(arrayOf("MULTI")) + commands + listOf(arrayOf("EXEC")))
+            replies.filterIsInstance<RedisError>().firstOrNull()?.let { throw it }
+            val results = replies.lastOrNull() as? List<*> ?: throw IOException("Redis transaction was not committed")
+            if (results.size != commands.size) throw IOException("Redis returned incomplete transaction results")
+            results.filterIsInstance<RedisError>().firstOrNull()?.let { throw it }
+        }, https = { it.batch(commands, atomic = true); Unit })
     }
 
-    fun call(vararg args: String): Any? = use { it.call(*args) }
+    fun pipeline(commands: List<Array<String>>): List<Any?> = execute(
+        replayable = commands.all { it.firstOrNull() in READ_ONLY },
+        tcp = { connection ->
+            connection.pipeline(commands).also { replies ->
+                replies.filterIsInstance<RedisError>().firstOrNull()?.let { throw it }
+            }
+        },
+        https = { it.batch(commands, atomic = false) },
+    )
 
-    fun pipeline(commands: List<Array<String>>): List<Any?> = use { c ->
-        c.pipeline(commands).also { replies ->
-            replies.firstOrNull { it is RedisError && it.unusable }?.let { throw it as RedisError }
+    @Synchronized
+    private fun <T> execute(
+        replayable: Boolean,
+        tcp: (RedisConnection) -> T,
+        https: (RedisRest) -> T,
+    ): T {
+        if (route.useHttps) {
+            close()
+            return https(checkNotNull(route.rest))
+        }
+        val connection = try {
+            conn ?: RedisConnection(route.primary, readTimeoutMs).also { conn = it }
+        } catch (e: IOException) {
+            if (route.nativeUnavailable(e)) return https(checkNotNull(route.rest))
+            throw e
+        }
+        try {
+            return tcp(connection).also { route.nativeReady() }
+        } catch (e: IOException) {
+            close()
+            val fallback = route.nativeUnavailable(e)
+            // A missing response cannot distinguish an unsent mutation from an applied one.
+            if (fallback && replayable) return https(checkNotNull(route.rest))
+            throw e
         }
     }
 
@@ -276,7 +312,10 @@ class Redis(private val route: RedisRoute, private val readTimeoutMs: Int = 15_0
     override fun close() {
         conn?.close()
         conn = null
-        connUrl = null
+    }
+
+    private companion object {
+        val READ_ONLY = setOf("PING", "GET", "HGETALL", "EXISTS", "SMEMBERS", "ZREVRANGE", "XREVRANGE")
     }
 }
 
@@ -302,48 +341,91 @@ class RedisSubscriber(
     fun stop() {
         running = false
         conn?.close()
+        restCall?.cancel()
         worker?.interrupt()
     }
+
+    @Volatile private var restCall: okhttp3.Call? = null
 
     private fun loop() {
         var backoff = 500L
         while (running) {
-            val url = route.current
+            val useHttps = route.useHttps
             try {
-                val c = RedisConnection(url, readTimeoutMs = 45_000)
-                conn = c
-                c.send(arrayOf("SUBSCRIBE", *channels.toTypedArray()))
-                _connected.value = true
+                if (useHttps) subscribeHttps(checkNotNull(route.rest))
+                else subscribeNative()
                 backoff = 500L
-                // Keep NATs and cloud proxies from dropping an idle socket.
-                thread(name = "redis-sub-ping", isDaemon = true) {
-                    try {
-                        while (running && conn === c) {
-                            Thread.sleep(20_000)
-                            c.send(arrayOf("PING"))
-                        }
-                    } catch (_: Exception) {
-                    }
-                }
-                while (running && route.current == url) {
-                    val msg = c.read() as? List<*> ?: continue
-                    if (msg.getOrNull(0) == "message") {
-                        runCatching { onMessage(msg[1] as String, msg[2] as? String ?: "") }
-                    }
-                }
-            } catch (e: Exception) {
-                _connected.value = false
-                conn?.close()
-                if (e is RedisError && e.unusable) route.failover(url)
-                if (running) {
+            } catch (e: IOException) {
+                if (!useHttps) route.nativeUnavailable(e)
+                if (running && useHttps == route.useHttps) {
                     try {
                         Thread.sleep(backoff)
                     } catch (_: InterruptedException) {
                     }
                     backoff = min(backoff * 2, 10_000)
                 }
+            } finally {
+                _connected.value = false
+                conn?.close()
+                conn = null
+                restCall?.cancel()
+                restCall = null
             }
         }
-        _connected.value = false
+    }
+
+    private fun subscribeNative() {
+        val c = RedisConnection(route.primary, readTimeoutMs = 45_000)
+        conn = c
+        if (!running) return
+        c.send(arrayOf("SUBSCRIBE", *channels.toTypedArray()))
+        repeat(channels.size) {
+            val ack = c.read() as? List<*>
+            if (ack?.firstOrNull() != "subscribe") throw IOException("Redis subscription was not acknowledged")
+        }
+        _connected.value = true
+        route.nativeReady()
+        val ping = thread(name = "redis-sub-ping", isDaemon = true) {
+            try {
+                while (running && conn === c) {
+                    Thread.sleep(20_000)
+                    c.send(arrayOf("PING"))
+                }
+            } catch (_: Exception) {
+            }
+        }
+        try {
+            while (running && !route.useHttps) {
+                val message = c.read() as? List<*> ?: continue
+                if (message.firstOrNull() == "message") {
+                    deliver(message.getOrNull(1) as? String, message.getOrNull(2) as? String)
+                }
+            }
+        } finally {
+            ping.interrupt()
+        }
+    }
+
+    private fun subscribeHttps(rest: RedisRest) {
+        val call = rest.subscription(channels)
+        restCall = call
+        if (!running) return
+        call.execute().use { response ->
+            if (!response.isSuccessful) throw IOException("Redis HTTPS subscription failed (HTTP ${response.code})")
+            val source = response.body?.source() ?: throw IOException("Empty Redis HTTPS subscription")
+            while (running && route.useHttps) {
+                val line = source.readUtf8Line() ?: throw EOFException("Redis HTTPS subscription closed")
+                if (!line.startsWith("data:")) continue
+                val fields = line.removePrefix("data:").trimStart().split(',', limit = 3)
+                when (fields.firstOrNull()) {
+                    "subscribe" -> _connected.value = true
+                    "message" -> deliver(fields.getOrNull(1), fields.getOrNull(2))
+                }
+            }
+        }
+    }
+
+    private fun deliver(channel: String?, payload: String?) {
+        if (channel in channels && channel != null && payload != null) runCatching { onMessage(channel, payload) }
     }
 }
