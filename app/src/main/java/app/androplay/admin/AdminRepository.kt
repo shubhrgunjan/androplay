@@ -320,7 +320,7 @@ class AdminRepository(private val app: AndroPlayApp) {
 
     private fun commandResult(cmd: Command, message: String, ok: Boolean): Boolean {
         app.diagnostics.record("Control", "${cmd.javaClass.simpleName} · $message")
-        if (!ok || cmd is Command.Play || cmd is Command.Slideshow) commandNotice.value = message
+        if (!ok) commandNotice.value = message
         return ok
     }
 

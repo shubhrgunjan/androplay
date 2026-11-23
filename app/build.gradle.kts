@@ -24,8 +24,8 @@ android {
         applicationId = "app.androplay"
         minSdk = 28
         targetSdk = 34
-        versionCode = 22
-        versionName = "0.9.2"
+        versionCode = 23
+        versionName = "0.9.3"
 
         buildConfigField("String", "DEFAULT_REDIS_URL", localString("androplay.redisUrl"))
         buildConfigField("String", "DEFAULT_REDIS_FALLBACK_URLS", localString("androplay.redisFallbackUrls"))
